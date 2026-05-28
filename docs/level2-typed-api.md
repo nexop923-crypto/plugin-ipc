@@ -428,6 +428,10 @@ Handler failure semantics:
   `transport_status = INTERNAL_ERROR` and an empty payload
   (`payload_len = 0`, `item_count = 1`). Clients receiving
   INTERNAL_ERROR must not attempt to decode the payload.
+- After sending a terminal service error response (`LIMIT_EXCEEDED`,
+  `BAD_ENVELOPE`, or `INTERNAL_ERROR`), the managed server closes that
+  session. Recovery is through the normal client reconnect path, not by
+  continuing the same session after a terminal error.
 - Business-level result codes (e.g., "item not found") are not handler
   failures — they are expressed as fields inside the response payload
   via the builder. The handler returns success in that case.

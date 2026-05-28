@@ -2982,6 +2982,21 @@ static void test_lookup_builder_semantic_error_paths(void) {
     nipc_apps_lookup_builder_init(&ab, buf, sizeof(buf), 1, 0);
     CHECK(nipc_apps_lookup_builder_add(
               &ab, NIPC_PID_LOOKUP_KNOWN, NIPC_APPS_CGROUP_UNKNOWN_RETRY_LATER,
+              0, 1, 0, 0, 1, "a", 1, NULL, 0, NULL, 0, NULL, 0) ==
+              NIPC_OK,
+          "apps_lookup accepts retry without cgroup path");
+    size_t retry_empty_len = nipc_apps_lookup_builder_finish(&ab);
+    nipc_apps_lookup_resp_view_t retry_empty_resp;
+    nipc_apps_lookup_item_view_t retry_empty_item;
+    CHECK(nipc_apps_lookup_resp_decode(buf, retry_empty_len, &retry_empty_resp) == NIPC_OK,
+          "apps_lookup decodes retry without cgroup path");
+    CHECK(nipc_apps_lookup_resp_item(&retry_empty_resp, 0, &retry_empty_item) == NIPC_OK &&
+              retry_empty_item.cgroup_status == NIPC_APPS_CGROUP_UNKNOWN_RETRY_LATER &&
+              retry_empty_item.cgroup_path.len == 0,
+          "apps_lookup retry without cgroup path fields");
+    nipc_apps_lookup_builder_init(&ab, buf, sizeof(buf), 1, 0);
+    CHECK(nipc_apps_lookup_builder_add(
+              &ab, NIPC_PID_LOOKUP_KNOWN, NIPC_APPS_CGROUP_UNKNOWN_RETRY_LATER,
               NIPC_ORCHESTRATOR_DOCKER, 1, 0, 0, 1,
               "a", 1, "/x", 2, "n", 1, NULL, 0) == NIPC_ERR_BAD_LAYOUT,
           "apps_lookup rejects retry metadata");

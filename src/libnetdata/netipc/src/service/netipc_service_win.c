@@ -235,7 +235,7 @@ static bool client_prepare_session_buffers(nipc_client_ctx_t *ctx)
 
 static uint32_t cgroups_request_payload_default(void)
 {
-    return 16u;
+    return NIPC_MAX_PAYLOAD_DEFAULT;
 }
 
 static uint32_t cgroups_response_payload_default(void)
@@ -443,14 +443,15 @@ static nipc_error_t transport_send(nipc_client_ctx_t *ctx,
         if (!msg || msg_len > ctx->send_buf_size)
             return NIPC_ERR_OVERFLOW;
 
+        if (payload_len > 0)
+            memmove(msg + NIPC_HEADER_LEN, payload, payload_len);
+
         hdr->magic      = NIPC_MAGIC_MSG;
         hdr->version    = NIPC_VERSION;
         hdr->header_len = NIPC_HEADER_LEN;
         hdr->payload_len = (uint32_t)payload_len;
 
         nipc_header_encode(hdr, msg, NIPC_HEADER_LEN);
-        if (payload_len > 0)
-            memcpy(msg + NIPC_HEADER_LEN, payload, payload_len);
 
         nipc_win_shm_error_t serr = nipc_win_shm_send(ctx->shm, msg, msg_len);
         if (serr == NIPC_WIN_SHM_ERR_MSG_TOO_LARGE) {
@@ -1084,6 +1085,7 @@ static void server_handle_session(nipc_managed_server_t *server,
 
         /* Build response header */
         nipc_header_t resp_hdr = {0};
+        bool close_after_response = false;
         resp_hdr.kind       = NIPC_KIND_RESPONSE;
         resp_hdr.code       = hdr.code;
         resp_hdr.message_id = hdr.message_id;
@@ -1104,6 +1106,7 @@ static void server_handle_session(nipc_managed_server_t *server,
                     server,
                     response_len >= UINT32_MAX ? UINT32_MAX : (uint32_t)response_len);
                 resp_hdr.transport_status = NIPC_STATUS_LIMIT_EXCEEDED;
+                close_after_response = true;
                 response_len = 0;
             } else {
                 if (response_len <= UINT32_MAX)
@@ -1118,6 +1121,7 @@ static void server_handle_session(nipc_managed_server_t *server,
                 server_note_response_capacity(server,
                                              session->max_response_payload_bytes * 2u);
             resp_hdr.transport_status = NIPC_STATUS_LIMIT_EXCEEDED;
+            close_after_response = true;
             response_len = 0;
             break;
         case NIPC_ERR_TRUNCATED:
@@ -1127,11 +1131,13 @@ static void server_handle_session(nipc_managed_server_t *server,
         case NIPC_ERR_BAD_ALIGNMENT:
         case NIPC_ERR_BAD_ITEM_COUNT:
             resp_hdr.transport_status = NIPC_STATUS_BAD_ENVELOPE;
+            close_after_response = true;
             response_len = 0;
             break;
         case NIPC_ERR_HANDLER_FAILED:
         default:
             resp_hdr.transport_status = NIPC_STATUS_INTERNAL_ERROR;
+            close_after_response = true;
             response_len = 0;
             break;
         }
@@ -1168,7 +1174,7 @@ static void server_handle_session(nipc_managed_server_t *server,
                 break;
         }
 
-        if (dispatch_err == NIPC_ERR_OVERFLOW)
+        if (close_after_response)
             break;
     }
 

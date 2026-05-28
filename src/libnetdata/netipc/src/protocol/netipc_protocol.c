@@ -1749,6 +1749,10 @@ static nipc_error_t apps_lookup_decode_item_bytes(const uint8_t *item,
                 return NIPC_ERR_BAD_LAYOUT;
             break;
         case NIPC_APPS_CGROUP_UNKNOWN_RETRY_LATER:
+            if (wire.orchestrator != 0 ||
+                wire.cgroup_name_length != 0 || wire.label_count != 0)
+                return NIPC_ERR_BAD_LAYOUT;
+            break;
         case NIPC_APPS_CGROUP_UNKNOWN_PERMANENT:
             if (wire.cgroup_path_length == 0 || wire.orchestrator != 0 ||
                 wire.cgroup_name_length != 0 || wire.label_count != 0)
@@ -1993,6 +1997,12 @@ nipc_error_t nipc_apps_lookup_builder_add(
             }
             break;
         case NIPC_APPS_CGROUP_UNKNOWN_RETRY_LATER:
+            if (orchestrator != 0 ||
+                cgroup_name_len != 0 || label_count != 0) {
+                b->error = NIPC_ERR_BAD_LAYOUT;
+                return b->error;
+            }
+            break;
         case NIPC_APPS_CGROUP_UNKNOWN_PERMANENT:
             if (cgroup_path_len == 0 || orchestrator != 0 ||
                 cgroup_name_len != 0 || label_count != 0) {

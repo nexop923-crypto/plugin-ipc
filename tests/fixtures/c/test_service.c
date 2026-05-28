@@ -332,6 +332,9 @@ typedef struct {
     const char *service;
     lookup_server_kind_t kind;
     nipc_managed_server_t server;
+    nipc_server_config_t config;
+    int has_config;
+    int worker_count;
     nipc_cgroups_lookup_service_handler_t cgroups_handler;
     nipc_apps_lookup_service_handler_t apps_handler;
     int ready;
@@ -341,16 +344,17 @@ typedef struct {
 static void *lookup_server_thread_fn(void *arg)
 {
     lookup_server_thread_ctx_t *ctx = (lookup_server_thread_ctx_t *)arg;
-    nipc_server_config_t scfg = default_service_server_config();
+    nipc_server_config_t scfg = ctx->has_config ? ctx->config : default_service_server_config();
+    int worker_count = ctx->worker_count > 0 ? ctx->worker_count : 1;
     nipc_error_t err;
 
     if (ctx->kind == LOOKUP_SERVER_CGROUPS) {
         err = nipc_server_init_cgroups_lookup(&ctx->server, TEST_RUN_DIR,
-                                              ctx->service, &scfg, 1,
+                                              ctx->service, &scfg, worker_count,
                                               &ctx->cgroups_handler);
     } else {
         err = nipc_server_init_apps_lookup(&ctx->server, TEST_RUN_DIR,
-                                           ctx->service, &scfg, 1,
+                                           ctx->service, &scfg, worker_count,
                                            &ctx->apps_handler);
     }
 
@@ -374,9 +378,15 @@ static void start_lookup_server(lookup_server_thread_ctx_t *sctx,
 {
     nipc_cgroups_lookup_service_handler_t cgroups_handler = sctx->cgroups_handler;
     nipc_apps_lookup_service_handler_t apps_handler = sctx->apps_handler;
+    nipc_server_config_t config = sctx->config;
+    int has_config = sctx->has_config;
+    int worker_count = sctx->worker_count;
     memset(sctx, 0, sizeof(*sctx));
     sctx->service = service;
     sctx->kind = kind;
+    sctx->config = config;
+    sctx->has_config = has_config;
+    sctx->worker_count = worker_count;
     sctx->cgroups_handler = cgroups_handler;
     sctx->apps_handler = apps_handler;
     __atomic_store_n(&sctx->ready, 0, __ATOMIC_RELAXED);
@@ -392,6 +402,28 @@ static void stop_lookup_server(lookup_server_thread_ctx_t *sctx, pthread_t tid)
 {
     nipc_server_stop(&sctx->server);
     pthread_join(tid, NULL);
+}
+
+static nipc_server_config_t default_shm_service_server_config(void)
+{
+    return (nipc_server_config_t){
+        .supported_profiles = NIPC_PROFILE_BASELINE | NIPC_PROFILE_SHM_FUTEX,
+        .preferred_profiles = NIPC_PROFILE_SHM_FUTEX,
+        .max_request_batch_items = 1,
+        .max_response_payload_bytes = RESPONSE_BUF_SIZE,
+        .auth_token = AUTH_TOKEN,
+    };
+}
+
+static nipc_client_config_t default_shm_service_client_config(void)
+{
+    return (nipc_client_config_t){
+        .supported_profiles = NIPC_PROFILE_BASELINE | NIPC_PROFILE_SHM_FUTEX,
+        .preferred_profiles = NIPC_PROFILE_SHM_FUTEX,
+        .max_request_batch_items = 1,
+        .max_response_payload_bytes = RESPONSE_BUF_SIZE,
+        .auth_token = AUTH_TOKEN,
+    };
 }
 
 typedef struct {
@@ -723,6 +755,7 @@ static void test_cgroups_lookup_call(void)
     cleanup_all(svc);
 
     lookup_server_thread_ctx_t sctx;
+    memset(&sctx, 0, sizeof(sctx));
     sctx.cgroups_handler.handle = cgroups_lookup_test_handler;
     sctx.cgroups_handler.user = NULL;
     pthread_t tid;
@@ -775,6 +808,7 @@ static void test_apps_lookup_call(void)
     cleanup_all(svc);
 
     lookup_server_thread_ctx_t sctx;
+    memset(&sctx, 0, sizeof(sctx));
     sctx.apps_handler.handle = apps_lookup_test_handler;
     sctx.apps_handler.user = NULL;
     pthread_t tid;
@@ -824,9 +858,192 @@ static void test_apps_lookup_call(void)
     cleanup_all(svc);
 }
 
+static void test_cgroups_lookup_call_shm(void)
+{
+    printf("Test 3c: Typed cgroups lookup call over SHM/futex\n");
+    const char *svc = "svc_cgroups_lookup_shm";
+    cleanup_all(svc);
+
+    lookup_server_thread_ctx_t sctx;
+    memset(&sctx, 0, sizeof(sctx));
+    sctx.config = default_shm_service_server_config();
+    sctx.has_config = 1;
+    sctx.worker_count = 1;
+    sctx.cgroups_handler.handle = cgroups_lookup_test_handler;
+    sctx.cgroups_handler.user = NULL;
+    pthread_t tid;
+    start_lookup_server(&sctx, svc, LOOKUP_SERVER_CGROUPS, &tid);
+    check("cgroups lookup SHM server started",
+          __atomic_load_n(&sctx.ready, __ATOMIC_ACQUIRE) == 1);
+
+    nipc_client_ctx_t client;
+    nipc_client_config_t ccfg = default_shm_service_client_config();
+    nipc_client_init(&client, TEST_RUN_DIR, svc, &ccfg);
+    nipc_client_refresh(&client);
+    check("cgroups lookup SHM client ready",
+          nipc_client_ready(&client) &&
+          client.shm != NULL &&
+          client.session.selected_profile == NIPC_PROFILE_SHM_FUTEX);
+
+    nipc_str_view_t paths[] = {
+        { .ptr = "/known", .len = 6 },
+        { .ptr = "/missing", .len = 8 },
+    };
+    nipc_cgroups_lookup_resp_view_t view;
+    nipc_error_t err = nipc_client_call_cgroups_lookup(&client, paths, 2, &view);
+    check("cgroups lookup SHM call ok", err == NIPC_OK);
+
+    if (err == NIPC_OK) {
+        nipc_client_status_t status;
+        nipc_client_status(&client, &status);
+        check("cgroups lookup SHM has no resize reconnect",
+              status.reconnect_count == 0);
+        check("cgroups lookup SHM item_count == 2", view.item_count == 2);
+        nipc_cgroups_lookup_item_view_t item;
+        check("cgroups lookup SHM item 0 decode",
+              nipc_cgroups_lookup_resp_item(&view, 0, &item) == NIPC_OK);
+        check("cgroups lookup SHM item 0 known",
+              item.status == NIPC_CGROUP_LOOKUP_KNOWN &&
+              service_str_eq(item.path, "/known") &&
+              service_str_eq(item.name, "pod-a"));
+        check("cgroups lookup SHM item 1 decode",
+              nipc_cgroups_lookup_resp_item(&view, 1, &item) == NIPC_OK);
+        check("cgroups lookup SHM item 1 retry",
+              item.status == NIPC_CGROUP_LOOKUP_UNKNOWN_RETRY_LATER &&
+              service_str_eq(item.path, "/missing"));
+    }
+
+    nipc_client_close(&client);
+    stop_lookup_server(&sctx, tid);
+    cleanup_all(svc);
+}
+
+static void test_apps_lookup_call_shm(void)
+{
+    printf("Test 3d: Typed apps lookup call over SHM/futex\n");
+    const char *svc = "svc_apps_lookup_shm";
+    cleanup_all(svc);
+
+    lookup_server_thread_ctx_t sctx;
+    memset(&sctx, 0, sizeof(sctx));
+    sctx.config = default_shm_service_server_config();
+    sctx.has_config = 1;
+    sctx.worker_count = 1;
+    sctx.apps_handler.handle = apps_lookup_test_handler;
+    sctx.apps_handler.user = NULL;
+    pthread_t tid;
+    start_lookup_server(&sctx, svc, LOOKUP_SERVER_APPS, &tid);
+    check("apps lookup SHM server started",
+          __atomic_load_n(&sctx.ready, __ATOMIC_ACQUIRE) == 1);
+
+    nipc_client_ctx_t client;
+    nipc_client_config_t ccfg = default_shm_service_client_config();
+    nipc_client_init(&client, TEST_RUN_DIR, svc, &ccfg);
+    nipc_client_refresh(&client);
+    check("apps lookup SHM client ready",
+          nipc_client_ready(&client) &&
+          client.shm != NULL &&
+          client.session.selected_profile == NIPC_PROFILE_SHM_FUTEX);
+
+    uint32_t pids[] = {1234, 0, 9999};
+    nipc_apps_lookup_resp_view_t view;
+    nipc_error_t err = nipc_client_call_apps_lookup(&client, pids, 3, &view);
+    check("apps lookup SHM call ok", err == NIPC_OK);
+
+    if (err == NIPC_OK) {
+        nipc_client_status_t status;
+        nipc_client_status(&client, &status);
+        check("apps lookup SHM has no resize reconnect",
+              status.reconnect_count == 0);
+        check("apps lookup SHM item_count == 3", view.item_count == 3);
+        nipc_apps_lookup_item_view_t item;
+        check("apps lookup SHM item 0 decode",
+              nipc_apps_lookup_resp_item(&view, 0, &item) == NIPC_OK);
+        check("apps lookup SHM item 0 known",
+              item.status == NIPC_PID_LOOKUP_KNOWN &&
+              item.cgroup_status == NIPC_APPS_CGROUP_KNOWN &&
+              item.pid == 1234 &&
+              service_str_eq(item.comm, "nginx"));
+        check("apps lookup SHM item 1 decode",
+              nipc_apps_lookup_resp_item(&view, 1, &item) == NIPC_OK);
+        check("apps lookup SHM item 1 host root",
+              item.pid == 0 &&
+              item.cgroup_status == NIPC_APPS_CGROUP_HOST_ROOT);
+        check("apps lookup SHM item 2 decode",
+              nipc_apps_lookup_resp_item(&view, 2, &item) == NIPC_OK);
+        check("apps lookup SHM item 2 unknown",
+              item.pid == 9999 &&
+              item.status == NIPC_PID_LOOKUP_UNKNOWN);
+    }
+
+    nipc_client_close(&client);
+    stop_lookup_server(&sctx, tid);
+    cleanup_all(svc);
+}
+
+static void test_shm_lookup_session_closes_after_client_disconnect(void)
+{
+    printf("Test 3e: SHM lookup session closes after client disconnect\n");
+    const char *svc = "svc_lookup_shm_disconnect";
+    cleanup_all(svc);
+
+    lookup_server_thread_ctx_t sctx;
+    memset(&sctx, 0, sizeof(sctx));
+    sctx.config = default_shm_service_server_config();
+    sctx.has_config = 1;
+    sctx.worker_count = 1;
+    sctx.cgroups_handler.handle = cgroups_lookup_test_handler;
+    sctx.cgroups_handler.user = NULL;
+    pthread_t tid;
+    start_lookup_server(&sctx, svc, LOOKUP_SERVER_CGROUPS, &tid);
+    check("disconnect SHM lookup server started",
+          __atomic_load_n(&sctx.ready, __ATOMIC_ACQUIRE) == 1);
+
+    nipc_client_config_t ccfg = default_shm_service_client_config();
+    nipc_client_ctx_t first;
+    nipc_client_init(&first, TEST_RUN_DIR, svc, &ccfg);
+    nipc_client_refresh(&first);
+    check("first SHM lookup client ready",
+          nipc_client_ready(&first) && first.shm != NULL);
+
+    usleep(150000);
+    if (nipc_client_ready(&first) && first.session.fd >= 0) {
+        char control_byte = 0;
+        check("first SHM lookup control fd accepts readable byte",
+              send(first.session.fd, &control_byte, sizeof(control_byte), 0) ==
+              (ssize_t)sizeof(control_byte));
+        usleep(150000);
+    }
+
+    nipc_client_close(&first);
+
+    usleep(300000);
+
+    nipc_client_ctx_t second;
+    nipc_client_init(&second, TEST_RUN_DIR, svc, &ccfg);
+    nipc_client_refresh(&second);
+    check("replacement SHM lookup client ready",
+          nipc_client_ready(&second) && second.shm != NULL);
+
+    if (nipc_client_ready(&second) && second.shm != NULL) {
+        nipc_str_view_t paths[] = {
+            { .ptr = "/known", .len = 6 },
+        };
+        nipc_cgroups_lookup_resp_view_t view;
+        nipc_error_t err = nipc_client_call_cgroups_lookup(&second, paths, 1, &view);
+        check("replacement SHM lookup call succeeds", err == NIPC_OK);
+        if (err == NIPC_OK)
+            check("replacement SHM lookup item_count == 1", view.item_count == 1);
+    }
+
+    nipc_client_close(&second);
+    stop_lookup_server(&sctx, tid);
+    cleanup_all(svc);
+}
+
 static void test_lookup_init_guards(void)
 {
-    printf("Test 3c: Typed lookup server init guards\n");
+    printf("Test 3f: Typed lookup server init guards\n");
 
     nipc_managed_server_t server;
     nipc_server_config_t scfg = default_service_server_config();
@@ -890,13 +1107,14 @@ static void test_lookup_init_guards(void)
 
 static void test_lookup_client_invalid_requests(void)
 {
-    printf("Test 3d: Typed lookup client invalid requests\n");
+    printf("Test 3g: Typed lookup client invalid requests\n");
 
     {
         const char *svc = "svc_cgroups_lookup_bad_req";
         cleanup_all(svc);
 
         lookup_server_thread_ctx_t sctx;
+        memset(&sctx, 0, sizeof(sctx));
         sctx.cgroups_handler.handle = cgroups_lookup_test_handler;
         sctx.cgroups_handler.user = NULL;
         pthread_t tid;
@@ -966,6 +1184,7 @@ static void test_lookup_client_invalid_requests(void)
         cleanup_all(svc);
 
         lookup_server_thread_ctx_t sctx;
+        memset(&sctx, 0, sizeof(sctx));
         sctx.apps_handler.handle = apps_lookup_test_handler;
         sctx.apps_handler.user = NULL;
         pthread_t tid;
@@ -2475,6 +2694,75 @@ static void test_server_rejects_wrong_request_kind(void)
     cleanup_all(svc);
 }
 
+static void test_server_closes_after_terminal_error_response(void)
+{
+    printf("Test: Server closes after terminal error response\n");
+    const char *svc = "svc_terminal_error_close";
+    cleanup_all(svc);
+
+    server_thread_ctx_t sctx;
+    pthread_t tid;
+    start_server(&sctx, svc, test_cgroups_handler, &tid);
+    check("terminal close server started",
+          __atomic_load_n(&sctx.ready, __ATOMIC_ACQUIRE) == 1);
+
+    nipc_uds_session_t bad_session;
+    memset(&bad_session, 0, sizeof(bad_session));
+    bad_session.fd = -1;
+
+    nipc_uds_client_config_t raw_cfg = default_transport_client_config();
+    nipc_uds_error_t uerr = nipc_uds_connect(TEST_RUN_DIR, svc, &raw_cfg, &bad_session);
+    check("terminal close raw connect", uerr == NIPC_UDS_OK);
+
+    if (uerr == NIPC_UDS_OK) {
+        nipc_header_t hdr = {
+            .kind = NIPC_KIND_REQUEST,
+            .code = NIPC_METHOD_CGROUPS_SNAPSHOT,
+            .flags = 0,
+            .item_count = 1,
+            .message_id = 1,
+            .transport_status = NIPC_STATUS_OK,
+        };
+        uint8_t bad_payload = 0;
+        uint8_t recv_buf[256];
+        nipc_header_t resp_hdr = {0};
+        const void *payload = NULL;
+        size_t payload_len = 0;
+
+        check("terminal close send bad request",
+              nipc_uds_send(&bad_session, &hdr, &bad_payload, sizeof(bad_payload)) ==
+              NIPC_UDS_OK);
+        check("terminal close receive bad-envelope response",
+              nipc_uds_receive(&bad_session, recv_buf, sizeof(recv_buf),
+                               &resp_hdr, &payload, &payload_len) == NIPC_UDS_OK);
+        check("terminal close status bad-envelope",
+              resp_hdr.transport_status == NIPC_STATUS_BAD_ENVELOPE);
+        check("terminal close response empty", payload_len == 0);
+    }
+
+    usleep(300000);
+
+    nipc_client_ctx_t good_client;
+    nipc_client_config_t good_cfg = default_client_config();
+    nipc_client_init(&good_client, TEST_RUN_DIR, svc, &good_cfg);
+    nipc_client_refresh(&good_client);
+    check("terminal close replacement client ready",
+          nipc_client_ready(&good_client));
+    if (nipc_client_ready(&good_client)) {
+        nipc_cgroups_resp_view_t view;
+        nipc_error_t err = nipc_client_call_cgroups_snapshot(&good_client, &view);
+        check("terminal close replacement call succeeds", err == NIPC_OK);
+        if (err == NIPC_OK)
+            check("terminal close replacement item_count == 3", view.item_count == 3);
+    }
+
+    nipc_client_close(&good_client);
+    if (bad_session.fd != -1)
+        nipc_uds_close_session(&bad_session);
+    stop_server(&sctx, tid);
+    cleanup_all(svc);
+}
+
 /* ------------------------------------------------------------------ */
 /*  Coverage: server init with NULL args, listen failure                */
 /* ------------------------------------------------------------------ */
@@ -2797,7 +3085,7 @@ static void test_client_init_defaults_and_truncation(void)
 
     nipc_client_init(&client, TEST_RUN_DIR, "svc_client_defaults", &zero_cfg);
     check("default request payload size",
-          client.transport_config.max_request_payload_bytes == 16u);
+          client.transport_config.max_request_payload_bytes == NIPC_MAX_PAYLOAD_DEFAULT);
     check("default response payload size",
           client.transport_config.max_response_payload_bytes == 65536u);
     check("default response buffer size",
@@ -2825,7 +3113,7 @@ static void test_client_init_defaults_and_truncation(void)
 
     nipc_client_init(&client, TEST_RUN_DIR, "svc_client_null_config", NULL);
     check("null client config request default",
-          client.transport_config.max_request_payload_bytes == 16u);
+          client.transport_config.max_request_payload_bytes == NIPC_MAX_PAYLOAD_DEFAULT);
     check("null client config response default",
           client.transport_config.max_response_payload_bytes == 65536u);
     nipc_client_close(&client);
@@ -2960,6 +3248,9 @@ int main(void)
     test_cgroups_call();           printf("\n");
     test_cgroups_lookup_call();    printf("\n");
     test_apps_lookup_call();       printf("\n");
+    test_cgroups_lookup_call_shm(); printf("\n");
+    test_apps_lookup_call_shm();   printf("\n");
+    test_shm_lookup_session_closes_after_client_disconnect(); printf("\n");
     test_lookup_init_guards();     printf("\n");
     test_lookup_client_invalid_requests(); printf("\n");
     test_retry_on_failure();       printf("\n");
@@ -2982,6 +3273,7 @@ int main(void)
     test_client_protocol_version_incompatible(); printf("\n");
     test_client_broken_refresh();       printf("\n");
     test_server_rejects_wrong_request_kind(); printf("\n");
+    test_server_closes_after_terminal_error_response(); printf("\n");
     test_server_init_null();            printf("\n");
     test_server_init_listen_failure();  printf("\n");
     test_drain_timeout();               printf("\n");

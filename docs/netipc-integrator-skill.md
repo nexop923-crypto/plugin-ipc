@@ -524,6 +524,9 @@ L2 typed calls are at-least-once:
 - ordinary failures retry once
 - overflow-driven resize recovery may reconnect multiple times while capacities
   grow
+- managed servers close a session after terminal service errors such as
+  `LIMIT_EXCEEDED`, `BAD_ENVELOPE`, or `INTERNAL_ERROR`; recovery is a new
+  handshake on a new session
 
 Implication:
 

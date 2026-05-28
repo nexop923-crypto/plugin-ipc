@@ -181,7 +181,15 @@ For `cgroup_status == KNOWN`:
 - labels may be present
 - `orchestrator` is application meaningful
 
-For `cgroup_status == UNKNOWN_RETRY_LATER` or `UNKNOWN_PERMANENT`:
+For `cgroup_status == UNKNOWN_RETRY_LATER`:
+
+- `cgroup_path_length` may be `0` when the process is known but the
+  cgroup path is not available yet
+- `orchestrator == 0`
+- `cgroup_name_length == 0`
+- `label_count == 0`
+
+For `cgroup_status == UNKNOWN_PERMANENT`:
 
 - `cgroup_path_length >= 1`
 - `orchestrator == 0`

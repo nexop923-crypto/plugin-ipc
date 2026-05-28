@@ -433,7 +433,8 @@ static void test_client_init_defaults_and_truncation(void)
     nipc_client_ctx_t client;
     nipc_client_init(&client, run_dir, service_name, &ccfg);
 
-    check("request payload default max", client.transport_config.max_request_payload_bytes == 16u);
+    check("request payload default max",
+          client.transport_config.max_request_payload_bytes == NIPC_MAX_PAYLOAD_DEFAULT);
     check("response payload default max", client.transport_config.max_response_payload_bytes == 65536u);
     check("response buffer allocated lazily", client.response_buf_size == 0u);
     check("send buffer allocated lazily", client.send_buf_size == 0u);
@@ -453,7 +454,7 @@ static void test_client_init_null_config_defaults(void)
     nipc_client_init(&client, TEST_RUN_DIR, "svc_client_null_cfg", NULL);
 
     check("NULL config request payload default max",
-          client.transport_config.max_request_payload_bytes == 16u);
+          client.transport_config.max_request_payload_bytes == NIPC_MAX_PAYLOAD_DEFAULT);
     check("NULL config response payload default max",
           client.transport_config.max_response_payload_bytes == 65536u);
     check("NULL config supported_profiles default",
@@ -540,7 +541,7 @@ static void test_server_init_null_config_defaults(void)
     check("typed init with NULL config succeeds", err == NIPC_OK);
     if (err == NIPC_OK) {
         check("typed NULL config request default max",
-              server.learned_request_payload_bytes == 16u);
+              server.learned_request_payload_bytes == NIPC_MAX_PAYLOAD_DEFAULT);
         check("typed NULL config response default max",
               server.learned_response_payload_bytes == 65536u);
         check("typed NULL config worker_count clamped",

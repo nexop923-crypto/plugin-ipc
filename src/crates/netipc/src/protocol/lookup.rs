@@ -1051,7 +1051,12 @@ fn decode_apps_item(item: &[u8]) -> Result<AppsLookupItemView<'_>, NipcError> {
                     return Err(NipcError::BadLayout);
                 }
             }
-            APPS_CGROUP_UNKNOWN_RETRY_LATER | APPS_CGROUP_UNKNOWN_PERMANENT => {
+            APPS_CGROUP_UNKNOWN_RETRY_LATER => {
+                if orchestrator != 0 || name_len != 0 || label_count != 0 {
+                    return Err(NipcError::BadLayout);
+                }
+            }
+            APPS_CGROUP_UNKNOWN_PERMANENT => {
                 if path_len == 0 || orchestrator != 0 || name_len != 0 || label_count != 0 {
                     return Err(NipcError::BadLayout);
                 }
@@ -1205,7 +1210,13 @@ impl<'a> AppsLookupBuilder<'a> {
                         return Err(NipcError::BadLayout);
                     }
                 }
-                APPS_CGROUP_UNKNOWN_RETRY_LATER | APPS_CGROUP_UNKNOWN_PERMANENT => {
+                APPS_CGROUP_UNKNOWN_RETRY_LATER => {
+                    if orchestrator != 0 || !cgroup_name.is_empty() || !labels.is_empty() {
+                        self.error = Some(NipcError::BadLayout);
+                        return Err(NipcError::BadLayout);
+                    }
+                }
+                APPS_CGROUP_UNKNOWN_PERMANENT => {
                     if cgroup_path.is_empty()
                         || orchestrator != 0
                         || !cgroup_name.is_empty()
@@ -1490,7 +1501,7 @@ mod tests {
     #[test]
     fn apps_lookup_response_variants_roundtrip() {
         let mut buf = [0u8; 1024];
-        let mut b = AppsLookupBuilder::new(&mut buf, 3, 7);
+        let mut b = AppsLookupBuilder::new(&mut buf, 4, 7);
         b.add(
             PID_LOOKUP_KNOWN,
             APPS_CGROUP_KNOWN,
@@ -1503,6 +1514,20 @@ mod tests {
             b"/docker/abc",
             b"container-a",
             &[(b"image".as_slice(), b"nginx:latest".as_slice())],
+        )
+        .unwrap();
+        b.add(
+            PID_LOOKUP_KNOWN,
+            APPS_CGROUP_UNKNOWN_RETRY_LATER,
+            0,
+            125,
+            1,
+            0,
+            44,
+            b"worker",
+            b"",
+            b"",
+            &[],
         )
         .unwrap();
         b.add(
@@ -1535,10 +1560,15 @@ mod tests {
         .unwrap();
         let n = b.finish().unwrap();
         let view = AppsLookupResponseView::decode(&buf[..n]).unwrap();
-        assert_eq!(view.item_count, 3);
+        assert_eq!(view.item_count, 4);
         assert_eq!(view.item(0).unwrap().comm.as_bytes(), b"nginx");
-        assert_eq!(view.item(1).unwrap().cgroup_status, APPS_CGROUP_HOST_ROOT);
-        assert_eq!(view.item(2).unwrap().status, PID_LOOKUP_UNKNOWN);
+        assert_eq!(
+            view.item(1).unwrap().cgroup_status,
+            APPS_CGROUP_UNKNOWN_RETRY_LATER
+        );
+        assert_eq!(view.item(1).unwrap().cgroup_path.as_bytes(), b"");
+        assert_eq!(view.item(2).unwrap().cgroup_status, APPS_CGROUP_HOST_ROOT);
+        assert_eq!(view.item(3).unwrap().status, PID_LOOKUP_UNKNOWN);
     }
 
     #[test]

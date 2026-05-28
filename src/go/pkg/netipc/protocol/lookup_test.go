@@ -679,7 +679,7 @@ func TestAppsLookupBuilderGuardCoverage(t *testing.T) {
 		0,
 		1235, 1, 1000, 43,
 		[]byte("worker"),
-		[]byte("/pending"),
+		nil,
 		nil,
 		nil,
 	); err != nil {
@@ -727,6 +727,9 @@ func TestAppsLookupBuilderGuardCoverage(t *testing.T) {
 	item, err = view.Item(1)
 	if err != nil || item.CgroupStatus != AppsCgroupUnknownRetryLater {
 		t.Fatalf("apps retry item = %+v err %v", item, err)
+	}
+	if len(item.CgroupPath.Bytes()) != 0 {
+		t.Fatalf("apps retry cgroup path = %q, want empty", item.CgroupPath.Bytes())
 	}
 	item, err = view.Item(2)
 	if err != nil || item.CgroupStatus != AppsCgroupUnknownPermanent {
@@ -789,6 +792,14 @@ func TestAppsLookupBuilderGuardCoverage(t *testing.T) {
 				return b.Add(PidLookupKnown, AppsCgroupUnknownRetryLater, 0, 1, 0, 0, 0,
 					[]byte("x"), []byte("/x"), nil,
 					labels(struct{ Key, Value []byte }{[]byte("k"), []byte("v")}))
+			},
+			want: ErrBadLayout,
+		},
+		{
+			name: "permanent missing path",
+			add: func(b *AppsLookupBuilder) error {
+				return b.Add(PidLookupKnown, AppsCgroupUnknownPermanent, 0, 1, 0, 0, 0,
+					[]byte("x"), nil, nil, nil)
 			},
 			want: ErrBadLayout,
 		},
@@ -1121,6 +1132,17 @@ func TestLookupDecodeAndItemErrorCoverage(t *testing.T) {
 			name: "retry with orchestrator",
 			edit: func(b []byte) {
 				ne.PutUint16(b[6:8], AppsCgroupUnknownRetryLater)
+			},
+			want: ErrBadLayout,
+		},
+		{
+			name: "permanent missing path",
+			edit: func(b []byte) {
+				ne.PutUint16(b[4:6], 0)
+				ne.PutUint16(b[6:8], AppsCgroupUnknownPermanent)
+				ne.PutUint32(b[44:48], 0)
+				ne.PutUint32(b[52:56], 0)
+				ne.PutUint16(b[56:58], 0)
 			},
 			want: ErrBadLayout,
 		},

@@ -1129,7 +1129,11 @@ func decodeAppsLookupItem(item []byte) (*AppsLookupItemView, error) {
 			if pathLen == 0 {
 				return nil, ErrBadLayout
 			}
-		case AppsCgroupUnknownRetryLater, AppsCgroupUnknownPermanent:
+		case AppsCgroupUnknownRetryLater:
+			if orchestrator != 0 || nameLen != 0 || labelCount != 0 {
+				return nil, ErrBadLayout
+			}
+		case AppsCgroupUnknownPermanent:
 			if pathLen == 0 || orchestrator != 0 || nameLen != 0 || labelCount != 0 {
 				return nil, ErrBadLayout
 			}
@@ -1236,7 +1240,12 @@ func (b *AppsLookupBuilder) Add(status, cgroupStatus, orchestrator uint16, pid, 
 				b.err = ErrBadLayout
 				return ErrBadLayout
 			}
-		case AppsCgroupUnknownRetryLater, AppsCgroupUnknownPermanent:
+		case AppsCgroupUnknownRetryLater:
+			if orchestrator != 0 || len(cgroupName) != 0 || len(labels) != 0 {
+				b.err = ErrBadLayout
+				return ErrBadLayout
+			}
+		case AppsCgroupUnknownPermanent:
 			if len(cgroupPath) == 0 || orchestrator != 0 || len(cgroupName) != 0 || len(labels) != 0 {
 				b.err = ErrBadLayout
 				return ErrBadLayout

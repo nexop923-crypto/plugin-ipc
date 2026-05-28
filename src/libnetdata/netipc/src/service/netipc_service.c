@@ -29,6 +29,7 @@
 #define CLIENT_SHM_ATTACH_RETRY_INTERVAL_MS 5u
 #define CLIENT_SHM_ATTACH_RETRY_TIMEOUT_MS 5000u
 #define CLIENT_CALL_RECONNECT_RETRY_INTERVAL_MS 5u
+#define CLIENT_CALL_RECONNECT_DRAIN_MS (SERVER_POLL_TIMEOUT_MS + 50u)
 #define CLIENT_CALL_RECONNECT_RETRIES 20u
 
 enum {
@@ -225,7 +226,7 @@ static bool client_prepare_session_buffers(nipc_client_ctx_t *ctx)
 
 static uint32_t cgroups_request_payload_default(void)
 {
-    return 16u;
+    return NIPC_MAX_PAYLOAD_DEFAULT;
 }
 
 static uint32_t cgroups_response_payload_default(void)
@@ -429,14 +430,15 @@ static nipc_error_t transport_send(nipc_client_ctx_t *ctx,
         if (!msg || msg_len > ctx->send_buf_size)
             return NIPC_ERR_OVERFLOW;
 
+        if (payload_len > 0)
+            memmove(msg + NIPC_HEADER_LEN, payload, payload_len);
+
         hdr->magic      = NIPC_MAGIC_MSG;
         hdr->version    = NIPC_VERSION;
         hdr->header_len = NIPC_HEADER_LEN;
         hdr->payload_len = (uint32_t)payload_len;
 
         nipc_header_encode(hdr, msg, NIPC_HEADER_LEN);
-        if (payload_len > 0)
-            memcpy(msg + NIPC_HEADER_LEN, payload, payload_len);
 
         nipc_shm_error_t serr = nipc_shm_send(ctx->shm, msg, msg_len);
         if (serr == NIPC_SHM_ERR_MSG_TOO_LARGE) {
@@ -597,6 +599,7 @@ static nipc_error_t call_with_retry(nipc_client_ctx_t *ctx,
         if (err != NIPC_ERR_OVERFLOW) {
             client_disconnect(ctx);
             ctx->state = NIPC_CLIENT_BROKEN;
+            usleep(CLIENT_CALL_RECONNECT_DRAIN_MS * 1000u);
             if (!client_reconnect_for_call(ctx)) {
                 ctx->error_count++;
                 return err;
@@ -983,6 +986,52 @@ static int poll_with_shutdown(int fd, bool *running)
     return 0;
 }
 
+static bool session_peer_disconnected(int fd)
+{
+    if (fd < 0)
+        return true;
+
+    struct pollfd pfd = {
+        .fd = fd,
+        .events = POLLIN | POLLHUP | POLLERR,
+    };
+#ifdef POLLRDHUP
+    pfd.events |= POLLRDHUP;
+#endif
+
+    int ret;
+    do {
+        ret = poll(&pfd, 1, 0);
+    } while (ret < 0 && errno == EINTR);
+
+    if (ret < 0)
+        return true;
+    if (ret == 0)
+        return false;
+
+    short disconnected = POLLHUP | POLLERR | POLLNVAL;
+#ifdef POLLRDHUP
+    disconnected |= POLLRDHUP;
+#endif
+    if (pfd.revents & disconnected)
+        return true;
+
+    if (pfd.revents & POLLIN) {
+        char ch;
+        ssize_t n;
+        do {
+            n = recv(fd, &ch, sizeof(ch), MSG_PEEK | MSG_DONTWAIT);
+        } while (n < 0 && errno == EINTR);
+
+        if (n == 0)
+            return true;
+        if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
+            return true;
+    }
+
+    return false;
+}
+
 static uint32_t server_snapshot_max_items(size_t response_buf_size,
                                           const nipc_cgroups_service_handler_t *service_handler)
 {
@@ -1092,8 +1141,11 @@ static void server_handle_session(nipc_managed_server_t *server,
             size_t msg_len;
             nipc_shm_error_t serr = nipc_shm_receive(shm, recv_buf, recv_size,
                                                        &msg_len, SERVER_POLL_TIMEOUT_MS);
-            if (serr == NIPC_SHM_ERR_TIMEOUT)
+            if (serr == NIPC_SHM_ERR_TIMEOUT) {
+                if (session_peer_disconnected(session->fd))
+                    break;
                 continue; /* check running flag */
+            }
             if (serr != NIPC_SHM_OK)
                 break;
             if (msg_len < NIPC_HEADER_LEN)
@@ -1179,6 +1231,7 @@ static void server_handle_session(nipc_managed_server_t *server,
 
         /* Build response header */
         nipc_header_t resp_hdr = {0};
+        bool close_after_response = false;
         resp_hdr.kind       = NIPC_KIND_RESPONSE;
         resp_hdr.code       = hdr.code;
         resp_hdr.message_id = hdr.message_id;
@@ -1199,6 +1252,7 @@ static void server_handle_session(nipc_managed_server_t *server,
                     server,
                     response_len >= UINT32_MAX ? UINT32_MAX : (uint32_t)response_len);
                 resp_hdr.transport_status = NIPC_STATUS_LIMIT_EXCEEDED;
+                close_after_response = true;
                 response_len = 0;
             } else {
                 if (response_len <= UINT32_MAX)
@@ -1213,6 +1267,7 @@ static void server_handle_session(nipc_managed_server_t *server,
                 server_note_response_capacity(server,
                                              session->max_response_payload_bytes * 2u);
             resp_hdr.transport_status = NIPC_STATUS_LIMIT_EXCEEDED;
+            close_after_response = true;
             response_len = 0;
             break;
         case NIPC_ERR_TRUNCATED:
@@ -1222,11 +1277,13 @@ static void server_handle_session(nipc_managed_server_t *server,
         case NIPC_ERR_BAD_ALIGNMENT:
         case NIPC_ERR_BAD_ITEM_COUNT:
             resp_hdr.transport_status = NIPC_STATUS_BAD_ENVELOPE;
+            close_after_response = true;
             response_len = 0;
             break;
         case NIPC_ERR_HANDLER_FAILED:
         default:
             resp_hdr.transport_status = NIPC_STATUS_INTERNAL_ERROR;
+            close_after_response = true;
             response_len = 0;
             break;
         }
@@ -1265,7 +1322,7 @@ static void server_handle_session(nipc_managed_server_t *server,
                 break;
         }
 
-        if (dispatch_err == NIPC_ERR_OVERFLOW)
+        if (close_after_response)
             break;
     }
 
