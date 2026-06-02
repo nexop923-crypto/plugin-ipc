@@ -4,8 +4,8 @@
 
 Status: completed
 
-Sub-state: Local rule cleanup validated, Codacy Cloud import accepted, and
-GitHub workflow changes ready for commit.
+Sub-state: Reopened after GitHub Static Analysis exposed staticcheck
+annotations from the previous commit; fixed and locally validated.
 
 ## Requirements
 
@@ -357,8 +357,10 @@ Completed.
   reconfigured, and repository reanalysis requested.
 - GitHub Code Scanning producers were tuned so current result-bearing rules are
   removed from active upload paths instead of hidden in GitHub only.
-- No SDK runtime code, protocol behavior, public docs, or public integration
-  skills changed.
+- Go staticcheck annotations from the previous commit were fixed by preserving
+  overflow checks in lookup offset calculations and removing an unused POSIX
+  UDS helper.
+- No protocol behavior, public docs, or public integration skills changed.
 
 ## Lessons Extracted
 
@@ -374,4 +376,41 @@ None yet.
 
 ## Regression Log
 
-None yet.
+## Regression - 2026-06-02
+
+What broke:
+
+- GitHub Static Analysis for commit `efa98de` completed successfully, but the
+  `src/go` staticcheck step still emitted annotations:
+  `src/go/pkg/netipc/protocol/lookup.go:758`,
+  `src/go/pkg/netipc/protocol/lookup.go:1274`,
+  `src/go/pkg/netipc/protocol/lookup.go:1278`, and
+  `src/go/pkg/netipc/transport/posix/uds.go:667`.
+
+Why previous validation missed it:
+
+- The scanner cleanup validation focused on Codacy, GitHub Code Scanning SARIF
+  producers, gosec, Semgrep, workflow syntax, and actionlint. The existing
+  Static Analysis workflow kept staticcheck as `continue-on-error`, so the
+  workflow stayed green while annotations still existed.
+
+Repair plan:
+
+- Fix the three `SA4006` findings by checking overflow status immediately after
+  intermediate offset calculations.
+- Remove the unused `maxU32` helper that triggered `U1000`.
+- Re-run local staticcheck and Go tests.
+
+Validation:
+
+- `cd src/go && "$(go env GOPATH)/bin/staticcheck" ./...` passed.
+- `cd src/go && go test ./...` passed.
+- `codacy-analysis analyze . --output-format sarif --output /tmp/plugin-ipc-codacy-sow0010-final.sarif --parallel-tools 2 --tool-timeout 900000`
+  reported zero issues after the Go fix.
+
+Artifact updates:
+
+- Specs: no protocol/API behavior changed; the Go fix preserves the intended
+  overflow behavior and makes it explicit.
+- Runtime project skills: no update needed.
+- End-user/operator docs and skills: no public workflow changed.

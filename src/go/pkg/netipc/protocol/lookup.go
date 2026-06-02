@@ -757,6 +757,10 @@ func (b *CgroupsLookupBuilder) Add(status, orchestrator uint16, path, name []byt
 	if ok {
 		nameOff, ok = checkedAddInt(nameOff, 1)
 	}
+	if !ok {
+		b.err = ErrOverflow
+		return ErrOverflow
+	}
 	fixedEnd, ok := checkedAddInt(nameOff, len(name))
 	if ok {
 		fixedEnd, ok = checkedAddInt(fixedEnd, 1)
@@ -1273,9 +1277,17 @@ func (b *AppsLookupBuilder) Add(status, cgroupStatus, orchestrator uint16, pid, 
 	if ok {
 		pathOff, ok = checkedAddInt(pathOff, 1)
 	}
+	if !ok {
+		b.err = ErrOverflow
+		return ErrOverflow
+	}
 	nameOff, ok := checkedAddInt(pathOff, len(cgroupPath))
 	if ok {
 		nameOff, ok = checkedAddInt(nameOff, 1)
+	}
+	if !ok {
+		b.err = ErrOverflow
+		return ErrOverflow
 	}
 	fixedEnd, ok := checkedAddInt(nameOff, len(cgroupName))
 	if ok {
