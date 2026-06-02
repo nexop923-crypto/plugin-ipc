@@ -465,9 +465,22 @@ Validation:
   reported zero issues across Checkov, cppcheck, Opengrep, Revive,
   ShellCheck, Spectral, and Trivy. The CLI logged the same 15 non-fatal tool
   errors as earlier: 14 Semgrep and 1 Revive parser/runtime errors.
+- GitHub Actions for commit `a9cbb33279f6b2cc111f365c7dc4b3ffcf16572d`
+  completed successfully for Static Analysis, CodeQL, Codacy Local Analysis,
+  Supply Chain Security, Runtime Safety, and Dependency Graph.
+- Codacy Cloud reanalyzed commit
+  `a9cbb33279f6b2cc111f365c7dc4b3ffcf16572d` and reported `issuesCount: 0`.
+- GitHub Code Scanning still had stale open alerts from deleted or tuned
+  analyses after the current clean uploads. The GitHub Code Scanning REST API
+  documents analysis deletion by newest-to-oldest within each
+  `ref`/`tool`/`category` set, with `confirm_delete` for the final analysis.
+  Removed 45 stale analysis records for removed or replaced producers:
+  markdownlint, Flawfinder, broad Semgrep, lizard, old revive, Agentlinter,
+  Scorecard SARIF, and old shellcheck.
+- GitHub Code Scanning open-alert query then reported zero open alerts.
 
 Artifact updates:
 
-- Specs: no protocol/API behavior changes are planned.
-- Runtime project skills: no project runtime skill update is expected.
-- End-user/operator docs and skills: no public SDK workflow change is expected.
+- Specs: no protocol/API behavior changed.
+- Runtime project skills: no project runtime skill update was needed.
+- End-user/operator docs and skills: no public SDK workflow changed.
