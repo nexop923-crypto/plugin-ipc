@@ -25,6 +25,8 @@ Facts:
 - Local `gosec` reports findings in the SDK, fixture, and benchmark Go modules.
 - Local C scanners report findings in test code when run beyond the initial hard gate.
 - Local full ShellCheck reports existing warning/info findings; the initial scanner rollout gates only ShellCheck errors.
+- `SOW-0011` enabled broader Codacy-backed analysis and surfaced additional
+  existing findings across agent instructions, C, Go, Shell, and Markdown.
 
 Inferences:
 
@@ -49,6 +51,7 @@ Unknowns:
 Sources checked:
 
 - Local scanner validation from `SOW-0009`.
+- Local and cloud Codacy validation from `SOW-0011`.
 - Go SDK source around `src/go/pkg/netipc/protocol/lookup.go:758`, `src/go/pkg/netipc/protocol/lookup.go:1274`, `src/go/pkg/netipc/protocol/lookup.go:1278`, and `src/go/pkg/netipc/transport/posix/uds.go:667`.
 - C test source around `tests/fixtures/c/test_shm.c:1033`, `tests/fixtures/c/test_shm.c:1667`, and `tests/test_protocol.c:369`.
 
@@ -58,12 +61,24 @@ Current state:
 - `gosec ./...` reports findings across `src/go`, `tests/fixtures/go`, and `bench/drivers/go`; common classes include integer conversion, file path, unsafe block, and unchecked return findings.
 - `cppcheck` against the broader test tree reports uninitialized-buffer findings in test code, including `tests/fixtures/c/test_shm.c:1033` and `tests/test_protocol.c:369`.
 - `flawfinder --minlevel=4` reports `access()` usage in Windows shared-memory cleanup logic and C tests, including `tests/fixtures/c/test_shm.c:1667`.
+- Codacy Cloud reanalysis after the broader configuration reports 2,448
+  issues on the latest analyzed commit available to Codacy at that time.
+- Local Codacy SARIF generation with the broad 11-tool configuration produced
+  7,736 existing findings: Agentlinter 142, Lizard 859, Revive 226,
+  Semgrep/Opengrep 1,070, cppcheck 515, flawfinder 1,525, markdownlint 3,344,
+  and ShellCheck 55.
+- Local Codacy JSON analysis before Opengrep was installed produced 6,666
+  findings with zero tool errors, showing that the broad configuration is
+  executable and that the backlog is real cleanup debt rather than a missing
+  scanner setup.
 
 Risks:
 
 - Fixing findings mechanically can change wire encoding, transport behavior, or benchmark semantics.
 - Suppressing findings too broadly can hide real bugs.
 - Tightening gates before cleanup will make the initial scanner rollout fail immediately.
+- The Codacy finding volume is high enough that making the new Codacy workflow a
+  hard failure immediately would block normal development on pre-existing debt.
 
 ## Pre-Implementation Gate
 
@@ -79,6 +94,14 @@ Evidence reviewed:
 - `src/go/pkg/netipc/transport/posix/uds.go:667` from local `staticcheck`.
 - `tests/fixtures/c/test_shm.c:1033` and `tests/test_protocol.c:369` from local `cppcheck`.
 - `tests/fixtures/c/test_shm.c:1667` from local `flawfinder --minlevel=4`.
+- `codacy-analysis analyze . --output-format sarif` under `SOW-0011`
+  generated 7,736 findings across Agentlinter, Lizard, Revive,
+  Semgrep/Opengrep, cppcheck, flawfinder, markdownlint, and ShellCheck.
+- `codacy-analysis analyze . --inspect --output-format json` under `SOW-0011`
+  reported 11 ready tools and zero unavailable configured tools.
+- `codacy repository gh netdata plugin-ipc --output json` after the `SOW-0011`
+  Codacy import reported 2,448 repository issues on Codacy's latest analyzed
+  commit at that time.
 
 Affected contracts and surfaces:
 
@@ -142,6 +165,9 @@ Open decisions:
 ### 2026-06-02
 
 - Created from `SOW-0009` validation after local scanner installation surfaced pre-existing findings.
+- Expanded by `SOW-0011` validation after Codacy local and cloud hardening
+  surfaced a larger existing backlog. The scanner setup stays strict; this SOW
+  owns triage, fixes, suppressions, and any future gate tightening.
 
 ## Validation
 
