@@ -4,8 +4,8 @@
 
 Status: completed
 
-Sub-state: Reopened after GitHub Static Analysis exposed staticcheck
-annotations from the previous commit; fixed and locally validated.
+Sub-state: Codacy Cloud remaining findings were fixed locally and scanner
+validation passed.
 
 ## Requirements
 
@@ -414,3 +414,60 @@ Artifact updates:
   overflow behavior and makes it explicit.
 - Runtime project skills: no update needed.
 - End-user/operator docs and skills: no public workflow changed.
+
+## Regression - 2026-06-02 Codacy Cloud Remaining Findings
+
+What broke:
+
+- Codacy Cloud showed 70 remaining issues after the scanner cleanup commits:
+  68 Trivy Go standard-library vulnerability findings at `src/go/go.mod:3`
+  and `tests/fixtures/go/go.mod:3`, one ShellCheck `SC2015` finding at
+  `tests/run-verifier-windows.sh:196`, and one Semgrep file-permission finding
+  at `tests/fixtures/go/cmd/interop_codec/main.go:22`.
+- GitHub Code Scanning still showed 7,199 open alerts. All but one were stale
+  alerts from removed or tuned producers: markdownlint, Flawfinder, broad
+  Semgrep, lizard, revive, Agentlinter, and Scorecard. The one live
+  result-bearing rule class was ShellCheck `SC2015`.
+
+Why previous validation missed it:
+
+- Local Codacy analysis produced zero findings, but Codacy Cloud also reported
+  Trivy findings against Go standard-library patch levels from `go.mod` files.
+- The previous GitHub validation focused on the new commit's successful
+  workflows and did not yet reconcile Codacy Cloud's issue list after
+  reanalysis.
+
+Repair plan:
+
+- Update all Go module declarations from the vulnerable `go 1.25` language
+  version to the patched `go 1.25.10` patch release, preserving the same Go
+  language family.
+- Replace the ambiguous ShellCheck `SC2015` expression with explicit shell
+  control flow.
+- Change the Go interop fixture output file mode from world-readable `0644` to
+  owner-only `0600`.
+- Re-run local Go tests, ShellCheck, Trivy, staticcheck, Codacy local analysis,
+  SOW audit, and post-push GitHub/Codacy remote checks.
+
+Validation:
+
+- `cd src/go && go test ./...` passed.
+- `cd tests/fixtures/go && go test ./...` passed.
+- `cd bench/drivers/go && go test ./...` passed.
+- `shellcheck tests/run-verifier-windows.sh` passed after fixing `SC2015`,
+  `SC2059`, and `SC2034` findings in that script.
+- `trivy fs --scanners vuln --format json --output /tmp/plugin-ipc-trivy-after.json .`
+  passed with zero vulnerabilities after updating Go module patch levels.
+- `cd src/go && "$(go env GOPATH)/bin/staticcheck" ./...` passed.
+- `cd tests/fixtures/go && "$(go env GOPATH)/bin/staticcheck" ./...` passed.
+- `cd bench/drivers/go && "$(go env GOPATH)/bin/staticcheck" ./...` passed.
+- `codacy-analysis analyze . --output-format sarif --output /tmp/plugin-ipc-codacy-after-cloud-fixes.sarif --parallel-tools 2 --tool-timeout 900000`
+  reported zero issues across Checkov, cppcheck, Opengrep, Revive,
+  ShellCheck, Spectral, and Trivy. The CLI logged the same 15 non-fatal tool
+  errors as earlier: 14 Semgrep and 1 Revive parser/runtime errors.
+
+Artifact updates:
+
+- Specs: no protocol/API behavior changes are planned.
+- Runtime project skills: no project runtime skill update is expected.
+- End-user/operator docs and skills: no public SDK workflow change is expected.

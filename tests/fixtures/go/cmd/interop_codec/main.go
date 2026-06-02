@@ -19,7 +19,7 @@ import (
 
 func writeFile(dir, name string, data []byte) {
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: cannot write %s: %v\n", path, err)
 		os.Exit(1)
 	}
