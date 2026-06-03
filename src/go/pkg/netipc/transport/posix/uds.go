@@ -510,7 +510,7 @@ func Listen(runDir, serviceName string, config ServerConfig) (*Listener, error) 
 	}
 
 	// Stale recovery
-	stale := checkAndRecoverStale(path)
+	stale := checkAndRecoverStale(path, runDirAllowsStaleUnlink(runDir))
 	if stale == staleLiveServer {
 		return nil, ErrAddrInUse
 	}
@@ -734,7 +734,19 @@ const (
 	staleLiveServer staleResult = 2
 )
 
-func checkAndRecoverStale(path string) staleResult {
+func runDirAllowsStaleUnlink(runDir string) bool {
+	info, err := os.Stat(runDir)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || st.Uid != uint32(os.Geteuid()) {
+		return false
+	}
+	return info.Mode().Perm()&0022 == 0
+}
+
+func checkAndRecoverStale(path string, allowStaleUnlink bool) staleResult {
 	_, err := os.Stat(path)
 	if err != nil {
 		return staleNotExist
@@ -752,8 +764,19 @@ func checkAndRecoverStale(path string) staleResult {
 
 	// Only unlink on connection-refused (stale socket).
 	// Other errors (EACCES, etc.) should not remove the file.
-	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ENOENT) {
-		_ = os.Remove(path)
+	if errors.Is(err, syscall.ENOENT) {
+		return staleNotExist
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		if !allowStaleUnlink {
+			return staleLiveServer
+		}
+		if removeErr := os.Remove(path); removeErr != nil {
+			if os.IsNotExist(removeErr) {
+				return staleNotExist
+			}
+			return staleLiveServer
+		}
 		return staleRecovered
 	}
 	// Can't determine ownership — treat as live to prevent overwriting

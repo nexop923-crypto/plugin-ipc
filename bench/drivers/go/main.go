@@ -77,10 +77,6 @@ func cpuNS() uint64 {
 	return sec*1_000_000_000 + nsec
 }
 
-func maxIntValue() int {
-	return int(^uint(0) >> 1)
-}
-
 func u32FromNonNegativeInt(value int) (uint32, bool) {
 	if value < 0 || uint64(value) > uint64(^uint32(0)) {
 		return 0, false
@@ -110,15 +106,12 @@ func estimateSamples(defaultSamples int, targetRPS uint64, durationSec int) int 
 	if targetRPS == 0 || durationSec <= 0 {
 		return defaultSamples
 	}
-	limit := uint64(maxIntValue() / durationSec) // #nosec G115 -- maxIntValue and durationSec are positive here.
-	if targetRPS > limit {
+	duration := uint64(durationSec) // #nosec G115 -- durationSec is checked positive above.
+	if targetRPS > uint64(maxLatencySamples)/duration {
 		return maxLatencySamples
 	}
-	samples := int(targetRPS) * durationSec // #nosec G115 -- targetRPS is bounded by limit above.
-	if samples > maxLatencySamples {
-		return maxLatencySamples
-	}
-	return samples
+	samples := targetRPS * duration
+	return int(samples) // #nosec G115 -- samples is bounded by maxLatencySamples above.
 }
 
 func randomBatchSize() uint32 {

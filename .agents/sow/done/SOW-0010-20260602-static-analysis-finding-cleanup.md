@@ -4,8 +4,8 @@
 
 Status: completed
 
-Sub-state: Completed after restoring the approved hygiene checks and validating
-the scanner/test matrix.
+Sub-state: Completed after fixing the remaining restored-rule GitHub Code
+Scanning findings and validating the scanner/test matrix.
 
 ## Requirements
 
@@ -614,3 +614,98 @@ Artifact updates:
   because public integration guidance did not change.
 - SOW lifecycle: this reopened regression is completed and the SOW will be
   moved back to `done/` in the same commit as the restored scanner changes.
+
+## Regression - 2026-06-03 Remote Alerts After Hygiene Restoration
+
+What broke:
+
+- The restored CodeQL and OSV rules were useful and found remaining real
+  hygiene/security issues after commit
+  `1b7ce780b7c4c54902e1ff0e957aad1542fe3733`.
+
+Evidence:
+
+- Codacy Cloud and local Codacy are clean for the restored commit, so the
+  remaining backlog is GitHub Code Scanning, not Codacy local configuration.
+- GitHub Code Scanning reported 32 open alerts after the restored-rule commit:
+  one Go integer-conversion alert in `bench/drivers/go/main.go`, nine Go
+  standard-library OSV alerts across the three Go modules, two C unused-code
+  alerts, three C unused-local alerts, thirteen C constant-comparison alerts,
+  two C TOCTOU alerts, one Go unchecked writable-close test alert, and one Go
+  useless-assignment test alert.
+- Official Go release history states that `go1.25.11` and `go1.26.4`, both
+  released on 2026-06-02, include security fixes for `crypto/x509`, `mime`,
+  and `net/textproto`; the repository Go module directives still declare
+  `go 1.25.10`.
+
+Why previous validation missed it:
+
+- Local `govulncheck` used the workstation Go runtime, currently `go1.26.3-X`,
+  while GitHub OSV scans the module `go` directive and therefore still sees
+  `go 1.25.10` as vulnerable.
+- The restored CodeQL rules only re-ran remotely after the follow-up commit was
+  pushed.
+
+Repair plan:
+
+- Update all Go module directives from `go 1.25.10` to the patched supported
+  Go line.
+- Fix the benchmark sample-count conversion by keeping the arithmetic bounded
+  before converting to `int`.
+- Check writable file close errors in the SHM edge test and remove the useless
+  UDS test assignment.
+- Remove unused C helpers and local variables.
+- Rewrite redundant overflow checks so the code preserves real guards without
+  constant comparisons.
+- Resolve the stale socket/shared-memory cleanup TOCTOU alerts with a
+  code-level security decision that is narrow and documented in code.
+
+Validation:
+
+- `cd src/go && go test ./... && go vet ./... && "$(go env GOPATH)/bin/govulncheck" ./... && "$(go env GOPATH)/bin/staticcheck" ./... && "$(go env GOPATH)/bin/gosec" -quiet -fmt json -out /tmp/plugin-ipc-gosec-src-go-followup.json -exclude=G404 ./...`
+  passed with no Go vulnerabilities or gosec findings.
+- `cd tests/fixtures/go && go test ./... && go vet ./... && "$(go env GOPATH)/bin/govulncheck" ./... && "$(go env GOPATH)/bin/staticcheck" ./... && "$(go env GOPATH)/bin/gosec" -quiet -fmt json -out /tmp/plugin-ipc-gosec-fixtures-go-followup.json -exclude=G404 ./...`
+  passed with no Go vulnerabilities or gosec findings.
+- `cd bench/drivers/go && go test ./... && go vet ./... && "$(go env GOPATH)/bin/govulncheck" ./... && "$(go env GOPATH)/bin/staticcheck" ./... && "$(go env GOPATH)/bin/gosec" -quiet -fmt json -out /tmp/plugin-ipc-gosec-bench-go-followup.json -exclude=G404 ./...`
+  passed with no Go vulnerabilities or gosec findings.
+- `cargo test --manifest-path src/crates/netipc/Cargo.toml --all-targets --all-features --no-run && cargo clippy --manifest-path src/crates/netipc/Cargo.toml --all-targets --all-features -- -D clippy::correctness -D clippy::suspicious`
+  passed. Clippy emitted existing warning-only hygiene output outside the hard
+  correctness/suspicious gate.
+- `cargo audit && cargo deny check advisories bans sources` passed in
+  `src/crates/netipc`.
+- `make` passed and rebuilt C, Rust, Go fixtures, and benchmark drivers.
+- `/usr/bin/ctest --test-dir build --output-on-failure` first passed 45/46 and
+  had one `go_FuzzDecodeCgroupsLookupRequest` timeout flake. The exact target
+  passed on rerun, and a second full `/usr/bin/ctest --test-dir build --output-on-failure`
+  run passed all 46 tests.
+- `actionlint` passed.
+- The local C static workflow commands passed: configure `build-static`, build
+  `netipc_protocol`, `netipc_uds`, `netipc_shm`, and `netipc_service`, then run
+  `clang-tidy`, `cppcheck`, and `flawfinder --minlevel=5 --error-level=5`.
+- After the final SHM cleanup adjustment, `make` passed again and a focused
+  `clang-tidy` plus `cppcheck` pass on `netipc_shm.c` exited 0.
+- `osv-scanner scan --recursive --format sarif --output-file /tmp/plugin-ipc-osv-followup.sarif .`
+  exited 0, and the SARIF result count was 0.
+- `codacy-analysis analyze . --install-dependencies --output-format json --output /tmp/plugin-ipc-codacy-followup.json --parallel-tools 2 --tool-timeout 900000`
+  exited 0 with 0 issues and 0 tool errors.
+- `codacy-analysis analyze . --install-dependencies --output-format sarif --output /tmp/plugin-ipc-codacy-followup.sarif --parallel-tools 2 --tool-timeout 900000`
+  exited 0 and generated SARIF with 0 results.
+- `bash .agents/sow/audit.sh` passed.
+- `git diff --check && git diff --cached --check` passed.
+- `git check-ignore -v .env` confirmed `.env` is ignored by `.gitignore`.
+
+Artifact updates:
+
+- AGENTS.md: no update needed; existing project validation commands and SOW
+  rules remain accurate.
+- Runtime project skills: no update needed; the repository still has no runtime
+  `project-*` skill, and no reusable repo workflow was missing from AGENTS.md.
+- Specs: updated `docs/level1-transport.md` and `docs/level1-posix-shm.md` to
+  document the POSIX private-runtime-directory rule for automatic stale unlink.
+- End-user/operator docs: updated the public transport docs listed above.
+- End-user/operator skills: updated `docs/netipc-integrator-skill.md` so
+  downstream integrators keep provider runtime directories private enough for
+  stale cleanup.
+- SOW lifecycle: this regression was appended after the prior SOW content; the
+  SOW is marked `completed` and will be moved back to `done/` in the same
+  commit as the implementation and docs.

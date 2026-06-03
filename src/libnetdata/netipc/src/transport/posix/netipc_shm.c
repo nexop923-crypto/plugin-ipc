@@ -70,6 +70,18 @@ static int build_shm_path(char *dst, size_t dst_len,
     return 0;
 }
 
+static bool run_dir_allows_stale_unlink(const char *run_dir)
+{
+    struct stat st;
+    if (stat(run_dir, &st) != 0)
+        return false;
+    if (!S_ISDIR(st.st_mode))
+        return false;
+    if (st.st_uid != geteuid())
+        return false;
+    return (st.st_mode & (S_IWGRP | S_IWOTH)) == 0;
+}
+
 /* Thin wrapper around the futex syscall. */
 static int futex_wake(uint32_t *addr, int count)
 {
@@ -109,12 +121,6 @@ static inline void *region_ptr(const nipc_shm_ctx_t *ctx, uint32_t offset)
     return (uint8_t *)ctx->base + offset;
 }
 
-/* Pointer to the header (always at offset 0). Used for non-atomic fields. */
-static inline nipc_shm_region_header_t *region_hdr(const nipc_shm_ctx_t *ctx)
-{
-    return (nipc_shm_region_header_t *)ctx->base;
-}
-
 /*
  * Byte-offset accessors for atomic fields. These avoid taking the
  * address of a packed struct member, which GCC warns about.
@@ -147,8 +153,12 @@ static inline uint32_t *shm_u32_ptr(void *base, int offset)
  *  -1  = doesn't exist
  *  -2  = exists but undersized / invalid (treated as stale, unlinked)
  */
-static int unlink_same_file(const char *path, const struct stat *expected)
+static int unlink_same_file(const char *path, const struct stat *expected,
+                            bool allow_stale_unlink)
 {
+    if (!allow_stale_unlink)
+        return -1;
+
     struct stat current;
     if (lstat(path, &current) != 0)
         return (errno == ENOENT) ? 0 : -1;
@@ -156,13 +166,15 @@ static int unlink_same_file(const char *path, const struct stat *expected)
     if (current.st_dev != expected->st_dev || current.st_ino != expected->st_ino)
         return -1;
 
+    /* Stale recovery only unlinks same-inode files in a private run directory. */
+    // codeql[cpp/toctou-race-condition]
     if (unlink(path) == 0 || errno == ENOENT)
         return 0;
 
     return -1;
 }
 
-static int check_shm_stale(const char *path)
+static int check_shm_stale(const char *path, bool allow_stale_unlink)
 {
 #ifdef O_NOFOLLOW
     int fd = open(path, O_RDONLY | O_NOFOLLOW);
@@ -191,13 +203,13 @@ static int check_shm_stale(const char *path)
     /* Must be at least header-sized to inspect. */
     if (st.st_size < (off_t)NIPC_SHM_HEADER_LEN) {
         close(fd);
-        return (unlink_same_file(path, &st) == 0) ? -2 : 1;
+        return (unlink_same_file(path, &st, allow_stale_unlink) == 0) ? -2 : 1;
     }
 
     void *map = mmap(NULL, NIPC_SHM_HEADER_LEN, PROT_READ, MAP_SHARED, fd, 0);
     close(fd);
     if (map == MAP_FAILED) {
-        return (unlink_same_file(path, &st) == 0) ? -2 : 1;
+        return (unlink_same_file(path, &st, allow_stale_unlink) == 0) ? -2 : 1;
     }
 
     const nipc_shm_region_header_t *hdr = (const nipc_shm_region_header_t *)map;
@@ -205,7 +217,7 @@ static int check_shm_stale(const char *path)
     /* Validate magic first. */
     if (hdr->magic != NIPC_SHM_REGION_MAGIC) {
         munmap(map, NIPC_SHM_HEADER_LEN);
-        return (unlink_same_file(path, &st) == 0) ? -2 : 1;
+        return (unlink_same_file(path, &st, allow_stale_unlink) == 0) ? -2 : 1;
     }
 
     int32_t owner = hdr->owner_pid;
@@ -217,7 +229,7 @@ static int check_shm_stale(const char *path)
     }
 
     /* Dead owner or zero generation (uninitialized/legacy) — stale */
-    return (unlink_same_file(path, &st) == 0) ? 0 : 1;
+    return (unlink_same_file(path, &st, allow_stale_unlink) == 0) ? 0 : 1;
 }
 
 /* ------------------------------------------------------------------ */
@@ -255,8 +267,7 @@ nipc_shm_error_t nipc_shm_server_create(const char *run_dir,
     if (req_capacity > UINT32_MAX - req_off)
         return NIPC_SHM_ERR_BAD_PARAM;
     uint32_t resp_off = align64(req_off + req_capacity);
-    if (resp_capacity > UINT32_MAX - resp_off ||
-        (size_t)resp_off > SIZE_MAX - (size_t)resp_capacity)
+    if (resp_capacity > UINT32_MAX - resp_off)
         return NIPC_SHM_ERR_BAD_PARAM;
     size_t region_size = (size_t)resp_off + resp_capacity;
 
@@ -265,7 +276,8 @@ nipc_shm_error_t nipc_shm_server_create(const char *run_dir,
 
     /* If O_EXCL failed because file exists, do stale recovery and retry. */
     if (fd < 0 && errno == EEXIST) {
-        int stale = check_shm_stale(path);
+        bool allow_stale_unlink = run_dir_allows_stale_unlink(run_dir);
+        int stale = check_shm_stale(path, allow_stale_unlink);
         if (stale == 1)
             return NIPC_SHM_ERR_ADDR_IN_USE;
         /* Stale file was unlinked, retry create */
@@ -785,6 +797,8 @@ void nipc_shm_cleanup_stale(const char *run_dir, const char *service_name)
     if (!dir)
         return;
 
+    bool allow_stale_unlink = run_dir_allows_stale_unlink(run_dir);
+
     struct dirent *ent;
     while ((ent = readdir(dir)) != NULL) {
         size_t nlen = strlen(ent->d_name);
@@ -805,7 +819,7 @@ void nipc_shm_cleanup_stale(const char *run_dir, const char *service_name)
 
         /* check_shm_stale unlinks stale files and returns:
          *   0 = stale (unlinked), +1 = live, -1 = gone, -2 = invalid (unlinked) */
-        check_shm_stale(path);
+        check_shm_stale(path, allow_stale_unlink);
     }
 
     closedir(dir);

@@ -75,6 +75,18 @@ static int build_socket_path(char *dst, size_t dst_len,
     return 0;
 }
 
+static bool run_dir_allows_stale_unlink(const char *run_dir)
+{
+    struct stat st;
+    if (stat(run_dir, &st) != 0)
+        return false;
+    if (!S_ISDIR(st.st_mode))
+        return false;
+    if (st.st_uid != geteuid())
+        return false;
+    return (st.st_mode & (S_IWGRP | S_IWOTH)) == 0;
+}
+
 /* Get the socket's send buffer size as the packet size. */
 static uint32_t detect_packet_size(int fd)
 {
@@ -105,11 +117,6 @@ static uint32_t highest_bit(uint32_t mask)
 static inline uint32_t min_u32(uint32_t a, uint32_t b)
 {
     return a < b ? a : b;
-}
-
-static inline uint32_t max_u32(uint32_t a, uint32_t b)
-{
-    return a > b ? a : b;
 }
 
 static inline uint32_t apply_default(uint32_t val, uint32_t def)
@@ -360,11 +367,8 @@ static nipc_uds_error_t server_handshake(int fd,
     if (server_pkt_size == 0)
         server_pkt_size = detect_packet_size(fd);
 
-    /* Server limits with defaults applied */
-    uint32_t s_req_pay  = apply_default(cfg->max_request_payload_bytes, NIPC_MAX_PAYLOAD_DEFAULT);
-    uint32_t s_req_bat  = apply_default(cfg->max_request_batch_items, UDS_DEFAULT_BATCH_ITEMS);
+    /* Server response defaults; request limits are client-proposed by spec. */
     uint32_t s_resp_pay = apply_default(cfg->max_response_payload_bytes, NIPC_MAX_PAYLOAD_DEFAULT);
-    uint32_t s_resp_bat = apply_default(cfg->max_response_batch_items, UDS_DEFAULT_BATCH_ITEMS);
     uint32_t s_profiles = cfg->supported_profiles ? cfg->supported_profiles : NIPC_PROFILE_BASELINE;
     uint32_t s_preferred = cfg->preferred_profiles;
 
@@ -502,8 +506,11 @@ static nipc_uds_error_t server_handshake(int fd,
 /*  Stale endpoint recovery                                            */
 /* ------------------------------------------------------------------ */
 
-static int unlink_stale_socket_path(const char *path)
+static int unlink_stale_socket_path(const char *path, bool allow_stale_unlink)
 {
+    if (!allow_stale_unlink)
+        return -1;
+
     struct stat st;
     if (lstat(path, &st) != 0)
         return (errno == ENOENT) ? 0 : -1;
@@ -511,6 +518,8 @@ static int unlink_stale_socket_path(const char *path)
     if (!S_ISSOCK(st.st_mode))
         return -1;
 
+    /* Stale recovery only unlinks entries in a private run directory. */
+    // codeql[cpp/toctou-race-condition]
     if (unlink(path) == 0 || errno == ENOENT)
         return 0;
 
@@ -518,7 +527,7 @@ static int unlink_stale_socket_path(const char *path)
 }
 
 /* Returns: 0 = stale (unlinked), 1 = live server, -1 = doesn't exist */
-static int check_and_recover_stale(const char *path)
+static int check_and_recover_stale(const char *path, bool allow_stale_unlink)
 {
     /* Try connecting to check if a live server is there */
     int probe = socket(AF_UNIX, SOCK_SEQPACKET, 0);
@@ -543,7 +552,7 @@ static int check_and_recover_stale(const char *path)
         if (saved_errno == ENOENT) {
             ret = -1;
         } else if (saved_errno == ECONNREFUSED) {
-            ret = (unlink_stale_socket_path(path) == 0) ? 0 : 1;
+            ret = (unlink_stale_socket_path(path, allow_stale_unlink) == 0) ? 0 : 1;
         } else {
             /* Can't determine ownership — treat as live to prevent overwriting */
             ret = 1;
@@ -573,7 +582,8 @@ nipc_uds_error_t nipc_uds_listen(const char *run_dir,
         return NIPC_UDS_ERR_PATH_TOO_LONG;
 
     /* Stale recovery */
-    int stale = check_and_recover_stale(path);
+    bool allow_stale_unlink = run_dir_allows_stale_unlink(run_dir);
+    int stale = check_and_recover_stale(path, allow_stale_unlink);
     if (stale == 1)
         return NIPC_UDS_ERR_ADDR_IN_USE;
 
