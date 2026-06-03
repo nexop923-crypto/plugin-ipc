@@ -950,6 +950,24 @@ static nipc_error_t apps_lookup_validate_semantics(uint16_t status,
     return NIPC_OK;
 }
 
+static nipc_error_t cgroups_lookup_validate_semantics(uint16_t status,
+                                                      uint16_t orchestrator,
+                                                      uint64_t path_len,
+                                                      uint64_t name_len,
+                                                      uint64_t label_count)
+{
+    if (status != NIPC_CGROUP_LOOKUP_KNOWN &&
+        status != NIPC_CGROUP_LOOKUP_UNKNOWN_RETRY_LATER &&
+        status != NIPC_CGROUP_LOOKUP_UNKNOWN_PERMANENT)
+        return NIPC_ERR_BAD_LAYOUT;
+    if (path_len == 0)
+        return NIPC_ERR_BAD_LAYOUT;
+    if (status != NIPC_CGROUP_LOOKUP_KNOWN &&
+        (orchestrator != 0 || name_len != 0 || label_count != 0))
+        return NIPC_ERR_BAD_LAYOUT;
+    return NIPC_OK;
+}
+
 static bool lookup_label_storage_add_u64(uint64_t *item_size, const nipc_lookup_label_view_t *label)
 {
     if (add_u64_over_limit(*item_size, label->key.len, UINT32_MAX, item_size))
@@ -1128,6 +1146,31 @@ static nipc_error_t lookup_label_at(const uint8_t *item,
     return lookup_string_view(item, item_len, hdr_size,
                               entry.value_offset, entry.value_length,
                               &out->value, &ignored);
+}
+
+static void cgroups_lookup_write_labels(uint8_t *item,
+                                        size_t table_start,
+                                        size_t table_bytes,
+                                        const nipc_lookup_label_view_t *labels,
+                                        uint16_t label_count)
+{
+    size_t next = table_start + table_bytes;
+    for (uint32_t i = 0; i < label_count; i++) {
+        nipc_lookup_label_entry_t entry = {
+            .key_offset = (uint32_t)next,
+            .key_length = labels[i].key.len,
+            .value_offset = (uint32_t)(next + labels[i].key.len + 1u),
+            .value_length = labels[i].value.len,
+        };
+        memcpy(item + table_start + (size_t)i * NIPC_LOOKUP_LABEL_ENTRY_SIZE,
+               &entry, sizeof(entry));
+        memcpy(item + entry.key_offset, labels[i].key.ptr, labels[i].key.len);
+        item[entry.key_offset + labels[i].key.len] = '\0';
+        if (labels[i].value.len > 0)
+            memcpy(item + entry.value_offset, labels[i].value.ptr, labels[i].value.len);
+        item[entry.value_offset + labels[i].value.len] = '\0';
+        next = entry.value_offset + labels[i].value.len + 1u;
+    }
 }
 
 static size_t lookup_finish_common(uint8_t *p,
@@ -1470,22 +1513,21 @@ static nipc_error_t cgroups_lookup_decode_item_bytes(const uint8_t *item,
 
     if (wire.layout_version != 1 || wire.reserved0 != 0 || wire.reserved1 != 0)
         return NIPC_ERR_BAD_LAYOUT;
-    if (wire.status != NIPC_CGROUP_LOOKUP_KNOWN &&
-        wire.status != NIPC_CGROUP_LOOKUP_UNKNOWN_RETRY_LATER &&
-        wire.status != NIPC_CGROUP_LOOKUP_UNKNOWN_PERMANENT)
-        return NIPC_ERR_BAD_LAYOUT;
-    if (wire.path_length == 0)
-        return NIPC_ERR_BAD_LAYOUT;
-    if (wire.status != NIPC_CGROUP_LOOKUP_KNOWN &&
-        (wire.orchestrator != 0 || wire.name_length != 0 || wire.label_count != 0))
-        return NIPC_ERR_BAD_LAYOUT;
+
+    nipc_error_t err = cgroups_lookup_validate_semantics(wire.status,
+                                                         wire.orchestrator,
+                                                         wire.path_length,
+                                                         wire.name_length,
+                                                         wire.label_count);
+    if (err != NIPC_OK)
+        return err;
 
     nipc_str_view_t path, name;
     uint64_t path_end, name_end;
-    nipc_error_t err = lookup_string_view(item, item_len,
-                                          NIPC_CGROUPS_LOOKUP_ITEM_HDR_SIZE,
-                                          wire.path_offset, wire.path_length,
-                                          &path, &path_end);
+    err = lookup_string_view(item, item_len,
+                             NIPC_CGROUPS_LOOKUP_ITEM_HDR_SIZE,
+                             wire.path_offset, wire.path_length,
+                             &path, &path_end);
     if (err != NIPC_OK)
         return err;
     err = lookup_string_view(item, item_len,
@@ -1654,19 +1696,17 @@ nipc_error_t nipc_cgroups_lookup_builder_add(
         b->error = NIPC_ERR_OVERFLOW;
         return b->error;
     }
-    if (status != NIPC_CGROUP_LOOKUP_KNOWN &&
-        status != NIPC_CGROUP_LOOKUP_UNKNOWN_RETRY_LATER &&
-        status != NIPC_CGROUP_LOOKUP_UNKNOWN_PERMANENT) {
-        b->error = NIPC_ERR_BAD_LAYOUT;
+    nipc_error_t err = cgroups_lookup_validate_semantics(status,
+                                                         orchestrator,
+                                                         path_len,
+                                                         name_len,
+                                                         label_count);
+    if (err != NIPC_OK) {
+        b->error = err;
         return b->error;
     }
     if (source_string_invalid(path, path_len, true) ||
         source_string_invalid(name, name_len, false)) {
-        b->error = NIPC_ERR_BAD_LAYOUT;
-        return b->error;
-    }
-    if (status != NIPC_CGROUP_LOOKUP_KNOWN &&
-        (orchestrator != 0 || name_len != 0 || label_count != 0)) {
         b->error = NIPC_ERR_BAD_LAYOUT;
         return b->error;
     }
@@ -1760,23 +1800,7 @@ nipc_error_t nipc_cgroups_lookup_builder_add(
     if (label_count > 0) {
         if (table_start > fixed_end)
             memset(item + fixed_end, 0, table_start - fixed_end);
-        size_t next = table_start + table_bytes;
-        for (uint32_t i = 0; i < label_count; i++) {
-            nipc_lookup_label_entry_t entry = {
-                .key_offset = (uint32_t)next,
-                .key_length = labels[i].key.len,
-                .value_offset = (uint32_t)(next + labels[i].key.len + 1u),
-                .value_length = labels[i].value.len,
-            };
-            memcpy(item + table_start + (size_t)i * NIPC_LOOKUP_LABEL_ENTRY_SIZE,
-                   &entry, sizeof(entry));
-            memcpy(item + entry.key_offset, labels[i].key.ptr, labels[i].key.len);
-            item[entry.key_offset + labels[i].key.len] = '\0';
-            if (labels[i].value.len > 0)
-                memcpy(item + entry.value_offset, labels[i].value.ptr, labels[i].value.len);
-            item[entry.value_offset + labels[i].value.len] = '\0';
-            next = entry.value_offset + labels[i].value.len + 1u;
-        }
+        cgroups_lookup_write_labels(item, table_start, table_bytes, labels, label_count);
     }
 
     nipc_lookup_dir_entry_t dir_entry = {

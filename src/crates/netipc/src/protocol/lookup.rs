@@ -193,6 +193,28 @@ fn validate_apps_lookup_semantics(
     Ok(())
 }
 
+fn validate_cgroups_lookup_semantics(
+    status: u16,
+    orchestrator: u16,
+    path_len: u64,
+    name_len: u64,
+    label_count: u64,
+) -> Result<(), NipcError> {
+    if status != CGROUP_LOOKUP_KNOWN
+        && status != CGROUP_LOOKUP_UNKNOWN_RETRY_LATER
+        && status != CGROUP_LOOKUP_UNKNOWN_PERMANENT
+    {
+        return Err(NipcError::BadLayout);
+    }
+    if path_len == 0 {
+        return Err(NipcError::BadLayout);
+    }
+    if status != CGROUP_LOOKUP_KNOWN && (orchestrator != 0 || name_len != 0 || label_count != 0) {
+        return Err(NipcError::BadLayout);
+    }
+    Ok(())
+}
+
 fn validate_lookup_dir(
     buf: &[u8],
     dir_start: usize,
@@ -675,18 +697,13 @@ fn decode_cgroups_item(item: &[u8]) -> Result<CgroupsLookupItemView<'_>, NipcErr
     if u16_at(item, 0) != 1 || u16_at(item, 6) != 0 || u16_at(item, 26) != 0 {
         return Err(NipcError::BadLayout);
     }
-    if status != CGROUP_LOOKUP_KNOWN
-        && status != CGROUP_LOOKUP_UNKNOWN_RETRY_LATER
-        && status != CGROUP_LOOKUP_UNKNOWN_PERMANENT
-    {
-        return Err(NipcError::BadLayout);
-    }
-    if path_len == 0 {
-        return Err(NipcError::BadLayout);
-    }
-    if status != CGROUP_LOOKUP_KNOWN && (orchestrator != 0 || name_len != 0 || label_count != 0) {
-        return Err(NipcError::BadLayout);
-    }
+    validate_cgroups_lookup_semantics(
+        status,
+        orchestrator,
+        path_len as u64,
+        name_len as u64,
+        label_count as u64,
+    )?;
 
     let (path, path_end) = lookup_string(item, CGROUPS_LOOKUP_ITEM_HDR_SIZE, path_off, path_len)?;
     let (name, name_end) = lookup_string(item, CGROUPS_LOOKUP_ITEM_HDR_SIZE, name_off, name_len)?;
@@ -767,20 +784,17 @@ impl<'a> CgroupsLookupBuilder<'a> {
             self.error = Some(NipcError::Overflow);
             return Err(NipcError::Overflow);
         }
-        if status != CGROUP_LOOKUP_KNOWN
-            && status != CGROUP_LOOKUP_UNKNOWN_RETRY_LATER
-            && status != CGROUP_LOOKUP_UNKNOWN_PERMANENT
-        {
-            self.error = Some(NipcError::BadLayout);
-            return Err(NipcError::BadLayout);
+        if let Err(err) = validate_cgroups_lookup_semantics(
+            status,
+            orchestrator,
+            path.len() as u64,
+            name.len() as u64,
+            labels.len() as u64,
+        ) {
+            self.error = Some(err);
+            return Err(err);
         }
         if source_string_invalid(path, true) || source_string_invalid(name, false) {
-            self.error = Some(NipcError::BadLayout);
-            return Err(NipcError::BadLayout);
-        }
-        if status != CGROUP_LOOKUP_KNOWN
-            && (orchestrator != 0 || !name.is_empty() || !labels.is_empty())
-        {
             self.error = Some(NipcError::BadLayout);
             return Err(NipcError::BadLayout);
         }
@@ -839,39 +853,7 @@ impl<'a> CgroupsLookupBuilder<'a> {
         item[name_offset + name.len()] = 0;
         if !labels.is_empty() {
             item[fixed_end..table_start].fill(0);
-            let mut next = table_start
-                .checked_add(table_bytes)
-                .ok_or(NipcError::Overflow)?;
-            for (i, (key, value)) in labels.iter().enumerate() {
-                if source_string_invalid(key, true) || source_string_invalid(value, false) {
-                    self.error = Some(NipcError::BadLayout);
-                    return Err(NipcError::BadLayout);
-                }
-                let entry_offset = i
-                    .checked_mul(LOOKUP_LABEL_ENTRY_SIZE)
-                    .ok_or(NipcError::Overflow)?;
-                let entry = table_start
-                    .checked_add(entry_offset)
-                    .ok_or(NipcError::Overflow)?;
-                let value_offset = next
-                    .checked_add(key.len())
-                    .and_then(|v| v.checked_add(1))
-                    .ok_or(NipcError::Overflow)?;
-                put_u32(item, entry, checked_u32(next)?);
-                put_u32(item, entry + 4, checked_u32(key.len())?);
-                put_u32(item, entry + 8, checked_u32(value_offset)?);
-                put_u32(item, entry + 12, checked_u32(value.len())?);
-                item[next..next + key.len()].copy_from_slice(key);
-                item[next + key.len()] = 0;
-                next = value_offset;
-                item[next..next + value.len()].copy_from_slice(value);
-                item[next + value.len()] = 0;
-                next = next
-                    .checked_add(value.len())
-                    .and_then(|v| v.checked_add(1))
-                    .ok_or(NipcError::Overflow)?;
-            }
-            item_size = next;
+            item_size = write_cgroups_lookup_labels(item, table_start, table_bytes, labels)?;
         }
         let dir_offset = (self.item_count as usize)
             .checked_mul(LOOKUP_DIR_ENTRY_SIZE)
@@ -903,6 +885,43 @@ impl<'a> CgroupsLookupBuilder<'a> {
     pub fn item_count(&self) -> u32 {
         self.item_count
     }
+}
+
+fn write_cgroups_lookup_labels(
+    item: &mut [u8],
+    table_start: usize,
+    table_bytes: usize,
+    labels: &[(&[u8], &[u8])],
+) -> Result<usize, NipcError> {
+    let mut next = table_start
+        .checked_add(table_bytes)
+        .ok_or(NipcError::Overflow)?;
+    for (i, (key, value)) in labels.iter().enumerate() {
+        let entry_offset = i
+            .checked_mul(LOOKUP_LABEL_ENTRY_SIZE)
+            .ok_or(NipcError::Overflow)?;
+        let entry = table_start
+            .checked_add(entry_offset)
+            .ok_or(NipcError::Overflow)?;
+        let value_offset = next
+            .checked_add(key.len())
+            .and_then(|v| v.checked_add(1))
+            .ok_or(NipcError::Overflow)?;
+        put_u32(item, entry, checked_u32(next)?);
+        put_u32(item, entry + 4, checked_u32(key.len())?);
+        put_u32(item, entry + 8, checked_u32(value_offset)?);
+        put_u32(item, entry + 12, checked_u32(value.len())?);
+        item[next..next + key.len()].copy_from_slice(key);
+        item[next + key.len()] = 0;
+        next = value_offset;
+        item[next..next + value.len()].copy_from_slice(value);
+        item[next + value.len()] = 0;
+        next = next
+            .checked_add(value.len())
+            .and_then(|v| v.checked_add(1))
+            .ok_or(NipcError::Overflow)?;
+    }
+    Ok(next)
 }
 
 fn write_cgroups_item_header(

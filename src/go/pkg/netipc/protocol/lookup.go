@@ -105,6 +105,19 @@ func validateAppsLookupSemantics(status, cgroupStatus, orchestrator uint16, ppid
 	return nil
 }
 
+func validateCgroupsLookupSemantics(status, orchestrator uint16, pathLen, nameLen, labelCount uint64) error {
+	if status != CgroupLookupKnown && status != CgroupLookupUnknownRetryLater && status != CgroupLookupUnknownPermanent {
+		return ErrBadLayout
+	}
+	if pathLen == 0 {
+		return ErrBadLayout
+	}
+	if status != CgroupLookupKnown && (orchestrator != 0 || nameLen != 0 || labelCount != 0) {
+		return ErrBadLayout
+	}
+	return nil
+}
+
 func maxIntValue() int {
 	return int(^uint(0) >> 1)
 }
@@ -741,14 +754,8 @@ func decodeCgroupsLookupItem(item []byte) (*CgroupsLookupItemView, error) {
 	if ne.Uint16(item[0:2]) != 1 || ne.Uint16(item[6:8]) != 0 || ne.Uint16(item[26:28]) != 0 {
 		return nil, ErrBadLayout
 	}
-	if status != CgroupLookupKnown && status != CgroupLookupUnknownRetryLater && status != CgroupLookupUnknownPermanent {
-		return nil, ErrBadLayout
-	}
-	if pathLen == 0 {
-		return nil, ErrBadLayout
-	}
-	if status != CgroupLookupKnown && (orchestrator != 0 || nameLen != 0 || labelCount != 0) {
-		return nil, ErrBadLayout
+	if err := validateCgroupsLookupSemantics(status, orchestrator, uint64(pathLen), uint64(nameLen), uint64(labelCount)); err != nil {
+		return nil, err
 	}
 	path, pathEnd, err := lookupString(item, CgroupsLookupItemHdr, pathOff, pathLen)
 	if err != nil {
@@ -809,15 +816,11 @@ func (b *CgroupsLookupBuilder) Add(status, orchestrator uint16, path, name []byt
 		b.err = ErrOverflow
 		return ErrOverflow
 	}
-	if status != CgroupLookupKnown && status != CgroupLookupUnknownRetryLater && status != CgroupLookupUnknownPermanent {
-		b.err = ErrBadLayout
-		return ErrBadLayout
+	if err := validateCgroupsLookupSemantics(status, orchestrator, uint64(len(path)), uint64(len(name)), uint64(len(labels))); err != nil {
+		b.err = err
+		return err
 	}
 	if invalidSourceString(path, true) || invalidSourceString(name, false) {
-		b.err = ErrBadLayout
-		return ErrBadLayout
-	}
-	if status != CgroupLookupKnown && (orchestrator != 0 || len(name) != 0 || len(labels) != 0) {
 		b.err = ErrBadLayout
 		return ErrBadLayout
 	}
@@ -910,70 +913,10 @@ func (b *CgroupsLookupBuilder) Add(status, orchestrator uint16, path, name []byt
 	item[nameOff+len(name)] = 0
 	if len(labels) > 0 {
 		clear(item[fixedEnd:tableStart])
-		next, ok := checkedAddInt(tableStart, tableBytes)
-		if !ok {
-			return ErrOverflow
-		}
-		for i, label := range labels {
-			if invalidSourceString(label.Key, true) || invalidSourceString(label.Value, false) {
-				b.err = ErrBadLayout
-				return ErrBadLayout
-			}
-			keyOff32, ok := checkedU32Int(next)
-			if !ok {
-				b.err = ErrOverflow
-				return ErrOverflow
-			}
-			keyLen32, ok := checkedU32Int(len(label.Key))
-			if !ok {
-				b.err = ErrOverflow
-				return ErrOverflow
-			}
-			valueOff, ok := checkedAddInt(next, len(label.Key))
-			if ok {
-				valueOff, ok = checkedAddInt(valueOff, 1)
-			}
-			if !ok {
-				b.err = ErrOverflow
-				return ErrOverflow
-			}
-			valueOff32, ok := checkedU32Int(valueOff)
-			if !ok {
-				b.err = ErrOverflow
-				return ErrOverflow
-			}
-			valueLen32, ok := checkedU32Int(len(label.Value))
-			if !ok {
-				b.err = ErrOverflow
-				return ErrOverflow
-			}
-			entryRel, ok := checkedMulInt(i, LookupLabelEntrySize)
-			if !ok {
-				b.err = ErrOverflow
-				return ErrOverflow
-			}
-			entry, ok := checkedAddInt(tableStart, entryRel)
-			if !ok {
-				b.err = ErrOverflow
-				return ErrOverflow
-			}
-			ne.PutUint32(item[entry:entry+4], keyOff32)
-			ne.PutUint32(item[entry+4:entry+8], keyLen32)
-			ne.PutUint32(item[entry+8:entry+12], valueOff32)
-			ne.PutUint32(item[entry+12:entry+16], valueLen32)
-			copy(item[next:], label.Key)
-			item[next+len(label.Key)] = 0
-			next = valueOff
-			copy(item[next:], label.Value)
-			item[next+len(label.Value)] = 0
-			next, ok = checkedAddInt(next, len(label.Value))
-			if ok {
-				next, ok = checkedAddInt(next, 1)
-			}
-			if !ok {
-				b.err = ErrOverflow
-				return ErrOverflow
-			}
+		next, err := writeCgroupsLookupLabels(item, tableStart, tableBytes, labels)
+		if err != nil {
+			b.err = err
+			return err
 		}
 		itemSize = next
 	}
@@ -987,6 +930,63 @@ func (b *CgroupsLookupBuilder) Add(status, orchestrator uint16, path, name []byt
 	b.dataOffset = itemStart + itemSize
 	b.itemCount++
 	return nil
+}
+
+func writeCgroupsLookupLabels(item []byte, tableStart, tableBytes int, labels []struct{ Key, Value []byte }) (int, error) {
+	next, ok := checkedAddInt(tableStart, tableBytes)
+	if !ok {
+		return 0, ErrOverflow
+	}
+	for i, label := range labels {
+		keyOff32, ok := checkedU32Int(next)
+		if !ok {
+			return 0, ErrOverflow
+		}
+		keyLen32, ok := checkedU32Int(len(label.Key))
+		if !ok {
+			return 0, ErrOverflow
+		}
+		valueOff, ok := checkedAddInt(next, len(label.Key))
+		if ok {
+			valueOff, ok = checkedAddInt(valueOff, 1)
+		}
+		if !ok {
+			return 0, ErrOverflow
+		}
+		valueOff32, ok := checkedU32Int(valueOff)
+		if !ok {
+			return 0, ErrOverflow
+		}
+		valueLen32, ok := checkedU32Int(len(label.Value))
+		if !ok {
+			return 0, ErrOverflow
+		}
+		entryRel, ok := checkedMulInt(i, LookupLabelEntrySize)
+		if !ok {
+			return 0, ErrOverflow
+		}
+		entry, ok := checkedAddInt(tableStart, entryRel)
+		if !ok {
+			return 0, ErrOverflow
+		}
+		ne.PutUint32(item[entry:entry+4], keyOff32)
+		ne.PutUint32(item[entry+4:entry+8], keyLen32)
+		ne.PutUint32(item[entry+8:entry+12], valueOff32)
+		ne.PutUint32(item[entry+12:entry+16], valueLen32)
+		copy(item[next:], label.Key)
+		item[next+len(label.Key)] = 0
+		next = valueOff
+		copy(item[next:], label.Value)
+		item[next+len(label.Value)] = 0
+		next, ok = checkedAddInt(next, len(label.Value))
+		if ok {
+			next, ok = checkedAddInt(next, 1)
+		}
+		if !ok {
+			return 0, ErrOverflow
+		}
+	}
+	return next, nil
 }
 
 func (b *CgroupsLookupBuilder) Finish() int {
