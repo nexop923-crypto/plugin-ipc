@@ -55,16 +55,32 @@ static int validate_service_name(const char *name)
     return 0;
 }
 
+static int build_shm_name(char *dst, size_t dst_len,
+                          const char *service_name,
+                          uint64_t session_id)
+{
+    if (validate_service_name(service_name) < 0)
+        return -2; /* invalid service name */
+
+    int n = snprintf(dst, dst_len, "%s-%016llx.ipcshm",
+                     service_name, (unsigned long long)session_id);
+    if (n < 0 || (size_t)n >= dst_len)
+        return -1;
+    return 0;
+}
+
 /* Build per-session SHM file path: {run_dir}/{service_name}-{session_id:016x}.ipcshm */
 static int build_shm_path(char *dst, size_t dst_len,
                            const char *run_dir, const char *service_name,
                            uint64_t session_id)
 {
-    if (validate_service_name(service_name) < 0)
-        return -2; /* invalid service name */
+    char shm_name[256];
+    int name_rc = build_shm_name(shm_name, sizeof(shm_name), service_name,
+                                 session_id);
+    if (name_rc < 0)
+        return name_rc;
 
-    int n = snprintf(dst, dst_len, "%s/%s-%016llx.ipcshm",
-                     run_dir, service_name, (unsigned long long)session_id);
+    int n = snprintf(dst, dst_len, "%s/%s", run_dir, shm_name);
     if (n < 0 || (size_t)n >= dst_len)
         return -1;
     return 0;
@@ -153,28 +169,28 @@ static inline uint32_t *shm_u32_ptr(void *base, int offset)
  *  -1  = doesn't exist
  *  -2  = exists but undersized / invalid (treated as stale, unlinked)
  */
-static int unlink_same_file(const char *path, const struct stat *expected,
+static int unlink_same_file(int dir_fd, const char *name, const struct stat *expected,
                             bool allow_stale_unlink)
 {
     if (!allow_stale_unlink)
         return -1;
 
     struct stat current;
-    if (lstat(path, &current) != 0)
+    if (fstatat(dir_fd, name, &current, AT_SYMLINK_NOFOLLOW) != 0)
         return (errno == ENOENT) ? 0 : -1;
 
     if (current.st_dev != expected->st_dev || current.st_ino != expected->st_ino)
         return -1;
 
-    /* Stale recovery only unlinks same-inode files in a private run directory. */
-    // codeql[cpp/toctou-race-condition]
-    if (unlink(path) == 0 || errno == ENOENT)
+    /* Stale recovery only unlinks same-inode entries in a private run directory. */
+    if (unlinkat(dir_fd, name, 0) == 0 || errno == ENOENT)
         return 0;
 
     return -1;
 }
 
-static int check_shm_stale(const char *path, bool allow_stale_unlink)
+static int check_shm_stale(const char *path, int dir_fd, const char *name,
+                           bool allow_stale_unlink)
 {
 #ifdef O_NOFOLLOW
     int fd = open(path, O_RDONLY | O_NOFOLLOW);
@@ -203,13 +219,13 @@ static int check_shm_stale(const char *path, bool allow_stale_unlink)
     /* Must be at least header-sized to inspect. */
     if (st.st_size < (off_t)NIPC_SHM_HEADER_LEN) {
         close(fd);
-        return (unlink_same_file(path, &st, allow_stale_unlink) == 0) ? -2 : 1;
+        return (unlink_same_file(dir_fd, name, &st, allow_stale_unlink) == 0) ? -2 : 1;
     }
 
     void *map = mmap(NULL, NIPC_SHM_HEADER_LEN, PROT_READ, MAP_SHARED, fd, 0);
     close(fd);
     if (map == MAP_FAILED) {
-        return (unlink_same_file(path, &st, allow_stale_unlink) == 0) ? -2 : 1;
+        return (unlink_same_file(dir_fd, name, &st, allow_stale_unlink) == 0) ? -2 : 1;
     }
 
     const nipc_shm_region_header_t *hdr = (const nipc_shm_region_header_t *)map;
@@ -217,7 +233,7 @@ static int check_shm_stale(const char *path, bool allow_stale_unlink)
     /* Validate magic first. */
     if (hdr->magic != NIPC_SHM_REGION_MAGIC) {
         munmap(map, NIPC_SHM_HEADER_LEN);
-        return (unlink_same_file(path, &st, allow_stale_unlink) == 0) ? -2 : 1;
+        return (unlink_same_file(dir_fd, name, &st, allow_stale_unlink) == 0) ? -2 : 1;
     }
 
     int32_t owner = hdr->owner_pid;
@@ -229,7 +245,7 @@ static int check_shm_stale(const char *path, bool allow_stale_unlink)
     }
 
     /* Dead owner or zero generation (uninitialized/legacy) — stale */
-    return (unlink_same_file(path, &st, allow_stale_unlink) == 0) ? 0 : 1;
+    return (unlink_same_file(dir_fd, name, &st, allow_stale_unlink) == 0) ? 0 : 1;
 }
 
 /* ------------------------------------------------------------------ */
@@ -258,6 +274,14 @@ nipc_shm_error_t nipc_shm_server_create(const char *run_dir,
     if (path_rc < 0)
         return NIPC_SHM_ERR_PATH_TOO_LONG;
 
+    char shm_name[256];
+    int name_rc = build_shm_name(shm_name, sizeof(shm_name), service_name,
+                                 session_id);
+    if (name_rc == -2)
+        return NIPC_SHM_ERR_BAD_PARAM;
+    if (name_rc < 0)
+        return NIPC_SHM_ERR_PATH_TOO_LONG;
+
     /* Round capacities up to alignment. */
     req_capacity  = align64(req_capacity);
     resp_capacity = align64(resp_capacity);
@@ -277,7 +301,15 @@ nipc_shm_error_t nipc_shm_server_create(const char *run_dir,
     /* If O_EXCL failed because file exists, do stale recovery and retry. */
     if (fd < 0 && errno == EEXIST) {
         bool allow_stale_unlink = run_dir_allows_stale_unlink(run_dir);
-        int stale = check_shm_stale(path, allow_stale_unlink);
+        int dir_fd = allow_stale_unlink
+                         ? open(run_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+                         : -1;
+        if (dir_fd < 0)
+            allow_stale_unlink = false;
+
+        int stale = check_shm_stale(path, dir_fd, shm_name, allow_stale_unlink);
+        if (dir_fd >= 0)
+            close(dir_fd);
         if (stale == 1)
             return NIPC_SHM_ERR_ADDR_IN_USE;
         /* Stale file was unlinked, retry create */
@@ -797,7 +829,8 @@ void nipc_shm_cleanup_stale(const char *run_dir, const char *service_name)
     if (!dir)
         return;
 
-    bool allow_stale_unlink = run_dir_allows_stale_unlink(run_dir);
+    int dir_fd = dirfd(dir);
+    bool allow_stale_unlink = dir_fd >= 0 && run_dir_allows_stale_unlink(run_dir);
 
     struct dirent *ent;
     while ((ent = readdir(dir)) != NULL) {
@@ -819,7 +852,7 @@ void nipc_shm_cleanup_stale(const char *run_dir, const char *service_name)
 
         /* check_shm_stale unlinks stale files and returns:
          *   0 = stale (unlinked), +1 = live, -1 = gone, -2 = invalid (unlinked) */
-        check_shm_stale(path, allow_stale_unlink);
+        check_shm_stale(path, dir_fd, ent->d_name, allow_stale_unlink);
     }
 
     closedir(dir);

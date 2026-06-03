@@ -730,26 +730,28 @@ Evidence:
   stale cleanup `unlink()` calls in
   `src/libnetdata/netipc/src/transport/posix/netipc_shm.c` and
   `src/libnetdata/netipc/src/transport/posix/netipc_uds.c`.
-- The stale cleanup race cannot be fully eliminated with POSIX path unlink
-  semantics while preserving automatic stale socket/shared-memory cleanup. The
-  implemented product constraint is that automatic stale unlink only runs in a
-  process-owned run directory that is not group/world writable; the remaining
-  CodeQL finding is intentionally narrow and source-documented.
-- The previous inline `// codeql[cpp/toctou-race-condition]` comments did not
-  affect GitHub SARIF because the CodeQL configuration did not include the
-  C/C++ `AlertSuppression.ql` query.
+- The previous full-path stale cleanup used `lstat()` before `unlink()`. Even
+  with the process-owned private run directory requirement, CodeQL correctly
+  treats that pattern as a path check/use race.
+- A local Unix socket probe showed that connecting to a regular file at the
+  socket path returns `ECONNREFUSED`, so blindly unlinking after a failed
+  connect would be unsafe; the socket/file type and same-inode checks still
+  have to exist.
 
 Why previous validation missed it:
 
 - The local environment does not have the CodeQL CLI installed, so the only
   authoritative CodeQL validation point is the GitHub run after push.
 - The prior local validation proved the code built and local tools were clean,
-  but it did not prove CodeQL SARIF suppression handling.
+  but the remote CodeQL query source showed it specifically models full-path
+  `lstat()` guarding full-path `unlink()`.
 
 Repair plan:
 
-- Keep the CodeQL rule enabled globally and add the C/C++ alert suppression
-  query so the two reviewed stale-unlink suppressions are represented in SARIF.
+- Keep the CodeQL rule enabled globally and remove the full-path
+  `lstat()`/`unlink()` stale cleanup pattern. POSIX stale cleanup now opens the
+  validated private run directory and performs descriptor-relative
+  `fstatat()`/`unlinkat()` on generated entry names.
 - Compile the remaining addition-overflow guards only on 32-bit `size_t`
   platforms, where they are real portability checks, so the 64-bit CodeQL build
   no longer sees constant-false comparisons.
@@ -763,8 +765,8 @@ Validation:
   passed.
 - `cmake --build build-static --parallel --target netipc_protocol netipc_uds netipc_shm netipc_service`
   passed.
-- `clang-tidy -p build-static` on the C library sources passed with the
-  repository's existing warning-only baseline.
+- `clang-tidy -p build-static` on the changed POSIX transport sources passed
+  with the repository's existing warning-only baseline.
 - The first attempted `cppcheck --project=build-static/compile_commands.json`
   validation failed because it scanned the whole compile database and surfaced
   existing test/benchmark findings unrelated to this SOW; that is not the
@@ -778,6 +780,11 @@ Validation:
   exited 0, and the SARIF result count was 0.
 - `codacy-analysis analyze . --install-dependencies --output-format json --output /tmp/plugin-ipc-codacy-final.json --parallel-tools 2 --tool-timeout 900000`
   exited 0 with 0 issues and 0 tool errors.
+- After the descriptor-relative stale cleanup change, `make`,
+  `cmake --build build-static --parallel --target netipc_protocol netipc_uds netipc_shm netipc_service`,
+  focused `clang-tidy`, workflow-equivalent `cppcheck`,
+  `flawfinder --minlevel=5 --error-level=5 src/libnetdata/netipc tests`, and
+  `/usr/bin/ctest --test-dir build --output-on-failure` all passed again.
 
 Artifact updates:
 
@@ -787,8 +794,8 @@ Artifact updates:
   `project-*` skill.
 - Specs: no update needed; the stale cleanup behavior was already documented in
   the prior regression update.
-- End-user/operator docs: no update needed; this follow-up only makes CodeQL
-  suppression handling explicit and preserves the already documented behavior.
+- End-user/operator docs: no update needed; this follow-up preserves the
+  already documented private runtime directory behavior.
 - End-user/operator skills: no update needed; the public integrator skill was
   already updated for the private runtime directory requirement.
 - SOW lifecycle: this residual remote CodeQL regression was appended after the
