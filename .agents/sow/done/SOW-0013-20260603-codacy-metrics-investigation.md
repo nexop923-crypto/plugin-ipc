@@ -4,7 +4,7 @@
 
 Status: completed
 
-Sub-state: LCOV `DA:` checksum regression repaired; remote workflow and Codacy dashboard validation passed.
+Sub-state: coverage workflow path filter removed so Codacy coverage follows every default-branch head commit.
 
 ## Requirements
 
@@ -610,5 +610,68 @@ Validation:
 Artifact updates:
 
 - SOW lifecycle: reopened from `done/` to `current/` for this parser
+  regression, then completed and moved back to `done/` with the repair.
+- Specs/docs/skills: no protocol/API/operator behavior changes expected.
+
+## Regression - 2026-06-03 - Coverage Workflow Path Filter
+
+What broke:
+
+- Commit `e0ed8fd83ab14521b96e26e025bea6d63c514a0b` changed only the SOW
+  evidence record.
+- GitHub did not start `Codacy Coverage` for that commit because
+  `.github/workflows/codacy-coverage.yml` was path-filtered to code, workflow,
+  build, test, and `.gitignore` files.
+- Codacy Cloud still analyzed the new default-branch head and initially
+  returned no `coverage` field for that latest analyzed commit.
+
+Evidence:
+
+- `gh run list --workflow "Codacy Coverage"` showed no coverage run for
+  commit `e0ed8fd83ab14521b96e26e025bea6d63c514a0b`.
+- `codacy repository gh netdata plugin-ipc --output json` then reported
+  `lastAnalysedCommit.sha` as
+  `e0ed8fd83ab14521b96e26e025bea6d63c514a0b` without a `coverage` payload.
+- Manual `workflow_dispatch` run `26880845954` uploaded C, Rust, and Go
+  coverage successfully for current `main`.
+- After the manual run, Codacy Cloud again reported `coveragePercentage: 88`
+  for commit `e0ed8fd83ab14521b96e26e025bea6d63c514a0b`.
+
+Why previous validation missed it:
+
+- The validation proved coverage upload worked on a code/workflow-changing
+  commit, but did not account for Codacy analyzing later default-branch commits
+  that do not match the GitHub coverage workflow path filter.
+
+Repair plan:
+
+- Remove the path filters from `Codacy Coverage`.
+- Run coverage on every `main` push and every PR to `main` so the coverage
+  upload follows the commit Codacy analyzes.
+- Keep `workflow_dispatch` for manual recovery.
+
+Validation:
+
+- `actionlint .github/workflows/codacy-coverage.yml` passed.
+- `git diff --check` passed.
+- `bash .agents/sow/audit.sh` passed with `SOW initialization complete and
+  clean`.
+- Sensitive-data scan over the touched workflow and SOW files found no
+  personal name, workstation path, email address, or raw Codacy token value.
+- Workflow diff confirms `Codacy Coverage` no longer has `paths:` filters on
+  `push` or `pull_request`.
+- Manual `Codacy Coverage` run `26880845954` succeeded for current `main`
+  before this trigger repair was committed, proving the coverage upload path
+  still works for the current head commit.
+- Codacy Cloud repository query after manual run `26880845954` reported
+  `coveragePercentage: 88` for commit
+  `e0ed8fd83ab14521b96e26e025bea6d63c514a0b`.
+- The workflow change itself will trigger another `Codacy Coverage` run after
+  push because `.github/workflows/codacy-coverage.yml` changed. That run will
+  validate the no-path-filter behavior against the new default-branch head.
+
+Artifact updates:
+
+- SOW lifecycle: reopened from `done/` to `current/` for this workflow-trigger
   regression, then completed and moved back to `done/` with the repair.
 - Specs/docs/skills: no protocol/API/operator behavior changes expected.
