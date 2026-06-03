@@ -73,6 +73,8 @@ rewritten = []
 for line in report.read_text(encoding="utf-8").splitlines():
     if line.startswith("VER:"):
         continue
+    if line.startswith("DA:"):
+        line = ",".join(line.split(",", 2)[:2])
     if line.startswith(prefix):
         line = "SF:" + line[len(prefix):]
     rewritten.append(line)

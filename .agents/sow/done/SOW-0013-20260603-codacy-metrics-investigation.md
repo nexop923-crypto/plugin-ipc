@@ -4,7 +4,7 @@
 
 Status: completed
 
-Sub-state: LCOV parser regression repaired locally; remote workflow validation is the post-push verification path.
+Sub-state: LCOV `DA:` checksum regression repaired locally; remote workflow validation is the post-push verification path.
 
 ## Requirements
 
@@ -524,6 +524,73 @@ Validation:
   module-prefix paths.
 - Final C LCOV path sample remains repository-relative:
   `SF:src/libnetdata/netipc/src/protocol/netipc_protocol.c`.
+- GitHub Actions `Codacy Coverage` will run again after this repair is pushed.
+  If the remote reporter rejects another report format issue, this SOW will be
+  reopened again as a regression with the new evidence.
+
+Artifact updates:
+
+- SOW lifecycle: reopened from `done/` to `current/` for this parser
+  regression, then completed and moved back to `done/` with the repair.
+- Specs/docs/skills: no protocol/API/operator behavior changes expected.
+
+## Regression - 2026-06-03 - Codacy LCOV DA Checksums
+
+What broke:
+
+- GitHub Actions run `26879604593`, job `79275935075`, passed coverage
+  generation, artifact upload, and `CODACY_API_TOKEN` verification.
+- The first real upload step, `Upload C coverage to Codacy`, still failed.
+- Codacy reporter 14.1.3 again logged `Could not parse report, unrecognized
+  report format (tried: LCOV)` for `coverage/codacy/c-lcov.info`.
+
+Evidence:
+
+- Downloaded artifact `codacy-coverage-reports` from run `26879604593`.
+- The repaired C LCOV artifact no longer contained `VER:` records.
+- C `DA:` line records still had the gcovr checksum extension shape:
+  `DA:line,count,checksum`.
+- Rust `DA:` line records used the simpler shape `DA:line,count`.
+- A local reporter parse test using the downloaded C artifact reproduced the
+  parser failure with the original file.
+- The same local reporter parse test accepted a copy of the C LCOV with only
+  the third `DA:` checksum field removed; it generated a Codacy coverage JSON
+  report before failing later because the local test intentionally used a dummy
+  token.
+
+Why previous validation missed it:
+
+- The validation checked for unsupported record labels and missing
+  `end_of_record` separators, but did not check whether Codacy accepts optional
+  checksum fields inside otherwise standard `DA:` records.
+
+Repair plan:
+
+- Strip the optional third field from `DA:` records during the existing LCOV
+  normalization step.
+- Keep line number and hit count coverage data unchanged.
+- Re-run script lint, SOW audit, local coverage generation, local reporter parse
+  against the generated C report, and GitHub Actions `Codacy Coverage`.
+
+Validation:
+
+- `bash -n tests/generate-codacy-coverage.sh` passed.
+- `shellcheck --severity=error tests/generate-codacy-coverage.sh` passed.
+- `actionlint .github/workflows/codacy-coverage.yml` passed.
+- `git diff --check` passed.
+- `tests/generate-codacy-coverage.sh /tmp/plugin-ipc-codacy-coverage` passed
+  end to end.
+- Generated C and Rust LCOV reports contain no `VER:` records.
+- Generated C and Rust LCOV `DA:` records all use two fields:
+  `DA:line,count`.
+- Generated report path scan found no workstation absolute paths and no Go
+  module-prefix paths.
+- Generated C LCOV syntax scan found no records outside the normalized LCOV
+  shape needed by Codacy.
+- Local Codacy reporter 14.1.3 parse test against the generated C report used
+  the LCOV parser and generated the Codacy coverage JSON payload. The test then
+  failed at upload because it intentionally used a dummy token; that is outside
+  the parser path being validated locally.
 - GitHub Actions `Codacy Coverage` will run again after this repair is pushed.
   If the remote reporter rejects another report format issue, this SOW will be
   reopened again as a regression with the new evidence.
