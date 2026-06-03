@@ -71,6 +71,8 @@ prefix = f"SF:{root}/"
 rewritten = []
 
 for line in report.read_text(encoding="utf-8").splitlines():
+    if line.startswith("VER:"):
+        continue
     if line.startswith(prefix):
         line = "SF:" + line[len(prefix):]
     rewritten.append(line)

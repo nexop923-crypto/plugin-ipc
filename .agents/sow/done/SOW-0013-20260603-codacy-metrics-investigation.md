@@ -4,7 +4,7 @@
 
 Status: completed
 
-Sub-state: coverage workflow implemented; remote C build regression repaired locally and queued for remote revalidation after push.
+Sub-state: LCOV parser regression repaired locally; remote workflow validation is the post-push verification path.
 
 ## Requirements
 
@@ -475,3 +475,61 @@ Artifact updates:
 - SOW lifecycle: reopened from `done/` to `current/` for this regression.
 - Specs/docs/skills: no protocol/API/operator behavior changes expected from
   this test portability fix.
+
+## Regression - 2026-06-03 - Codacy LCOV Parser
+
+What broke:
+
+- After adding the `CODACY_API_TOKEN` GitHub Actions secret, rerun attempt 2 of
+  GitHub Actions run `26877997132` passed report generation, artifact upload,
+  and token verification.
+- The first real upload step, `Upload C coverage to Codacy`, failed.
+- Codacy reporter 14.1.3 logged `Could not parse report, unrecognized report
+  format (tried: LCOV)` for `coverage/codacy/c-lcov.info`.
+
+Evidence:
+
+- Downloaded artifact `codacy-coverage-reports` from run `26877997132`.
+- C LCOV record-type scan showed only one non-basic extension type: `VER`.
+- Artifact contained four `VER:` checksum records, one per `SF:` source file.
+
+Why previous validation missed it:
+
+- Local validation proved `gcovr` could generate LCOV and paths were
+  repository-relative, but did not prove Codacy's stricter LCOV parser accepted
+  `gcovr` checksum extension records.
+
+Repair plan:
+
+- Strip `VER:` records in the existing LCOV normalization step.
+- Keep all basic LCOV coverage records and repository-relative `SF:` paths.
+- Re-run script lint, SOW audit, local coverage generation, and GitHub Actions
+  Codacy Coverage.
+
+Validation:
+
+- `bash -n tests/generate-codacy-coverage.sh` passed.
+- `shellcheck --severity=error tests/generate-codacy-coverage.sh` passed.
+- `actionlint .github/workflows/codacy-coverage.yml` passed.
+- `git diff --check` passed.
+- `bash .agents/sow/audit.sh` passed with `SOW initialization complete and
+  clean`.
+- `tests/generate-codacy-coverage.sh /tmp/plugin-ipc-codacy-coverage` passed
+  end to end.
+- LCOV extension scan found no remaining `VER:` records in C or Rust reports.
+- C LCOV record-type scan found only standard LCOV records:
+  `TN`, `SF`, `FN`, `FNDA`, `FNF`, `FNH`, `DA`, `LF`, `LH`, `BRDA`, `BRF`,
+  and `BRH`.
+- Generated report path scan found no workstation absolute paths and no Go
+  module-prefix paths.
+- Final C LCOV path sample remains repository-relative:
+  `SF:src/libnetdata/netipc/src/protocol/netipc_protocol.c`.
+- GitHub Actions `Codacy Coverage` will run again after this repair is pushed.
+  If the remote reporter rejects another report format issue, this SOW will be
+  reopened again as a regression with the new evidence.
+
+Artifact updates:
+
+- SOW lifecycle: reopened from `done/` to `current/` for this parser
+  regression, then completed and moved back to `done/` with the repair.
+- Specs/docs/skills: no protocol/API/operator behavior changes expected.
