@@ -124,6 +124,75 @@ fn source_string_invalid(bytes: &[u8], require_non_empty: bool) -> bool {
     (require_non_empty && bytes.is_empty()) || bytes.contains(&0)
 }
 
+fn validate_apps_lookup_semantics(
+    status: u16,
+    cgroup_status: u16,
+    orchestrator: u16,
+    ppid: u32,
+    uid: u32,
+    starttime: u64,
+    comm_len: u64,
+    path_len: u64,
+    name_len: u64,
+    label_count: u64,
+) -> Result<(), NipcError> {
+    if status != PID_LOOKUP_KNOWN && status != PID_LOOKUP_UNKNOWN {
+        return Err(NipcError::BadLayout);
+    }
+    if cgroup_status != APPS_CGROUP_KNOWN
+        && cgroup_status != APPS_CGROUP_UNKNOWN_RETRY_LATER
+        && cgroup_status != APPS_CGROUP_UNKNOWN_PERMANENT
+        && cgroup_status != APPS_CGROUP_HOST_ROOT
+    {
+        return Err(NipcError::BadLayout);
+    }
+    if comm_len > 15 {
+        return Err(NipcError::BadLayout);
+    }
+    if status == PID_LOOKUP_UNKNOWN {
+        if orchestrator != 0
+            || cgroup_status != 0
+            || ppid != 0
+            || uid != NIPC_UID_UNSET
+            || starttime != 0
+            || comm_len != 0
+            || path_len != 0
+            || name_len != 0
+            || label_count != 0
+        {
+            return Err(NipcError::BadLayout);
+        }
+        return Ok(());
+    }
+    if comm_len == 0 {
+        return Err(NipcError::BadLayout);
+    }
+    match cgroup_status {
+        APPS_CGROUP_KNOWN => {
+            if path_len == 0 {
+                return Err(NipcError::BadLayout);
+            }
+        }
+        APPS_CGROUP_UNKNOWN_RETRY_LATER => {
+            if orchestrator != 0 || name_len != 0 || label_count != 0 {
+                return Err(NipcError::BadLayout);
+            }
+        }
+        APPS_CGROUP_UNKNOWN_PERMANENT => {
+            if path_len == 0 || orchestrator != 0 || name_len != 0 || label_count != 0 {
+                return Err(NipcError::BadLayout);
+            }
+        }
+        APPS_CGROUP_HOST_ROOT => {
+            if orchestrator != 0 || path_len != 0 || name_len != 0 || label_count != 0 {
+                return Err(NipcError::BadLayout);
+            }
+        }
+        _ => return Err(NipcError::BadLayout),
+    }
+    Ok(())
+}
+
 fn validate_lookup_dir(
     buf: &[u8],
     dir_start: usize,
@@ -1016,59 +1085,18 @@ fn decode_apps_item(item: &[u8]) -> Result<AppsLookupItemView<'_>, NipcError> {
     if u16_at(item, 0) != 1 || u32_at(item, 20) != 0 || u16_at(item, 58) != 0 {
         return Err(NipcError::BadLayout);
     }
-    if status != PID_LOOKUP_KNOWN && status != PID_LOOKUP_UNKNOWN {
-        return Err(NipcError::BadLayout);
-    }
-    if cgroup_status != APPS_CGROUP_KNOWN
-        && cgroup_status != APPS_CGROUP_UNKNOWN_RETRY_LATER
-        && cgroup_status != APPS_CGROUP_UNKNOWN_PERMANENT
-        && cgroup_status != APPS_CGROUP_HOST_ROOT
-    {
-        return Err(NipcError::BadLayout);
-    }
-    if comm_len > 15 {
-        return Err(NipcError::BadLayout);
-    }
-    if status == PID_LOOKUP_UNKNOWN {
-        if orchestrator != 0
-            || cgroup_status != 0
-            || ppid != 0
-            || uid != NIPC_UID_UNSET
-            || starttime != 0
-            || comm_len != 0
-            || path_len != 0
-            || name_len != 0
-            || label_count != 0
-        {
-            return Err(NipcError::BadLayout);
-        }
-    } else if comm_len == 0 {
-        return Err(NipcError::BadLayout);
-    } else {
-        match cgroup_status {
-            APPS_CGROUP_KNOWN => {
-                if path_len == 0 {
-                    return Err(NipcError::BadLayout);
-                }
-            }
-            APPS_CGROUP_UNKNOWN_RETRY_LATER => {
-                if orchestrator != 0 || name_len != 0 || label_count != 0 {
-                    return Err(NipcError::BadLayout);
-                }
-            }
-            APPS_CGROUP_UNKNOWN_PERMANENT => {
-                if path_len == 0 || orchestrator != 0 || name_len != 0 || label_count != 0 {
-                    return Err(NipcError::BadLayout);
-                }
-            }
-            APPS_CGROUP_HOST_ROOT => {
-                if orchestrator != 0 || path_len != 0 || name_len != 0 || label_count != 0 {
-                    return Err(NipcError::BadLayout);
-                }
-            }
-            _ => return Err(NipcError::BadLayout),
-        }
-    }
+    validate_apps_lookup_semantics(
+        status,
+        cgroup_status,
+        orchestrator,
+        ppid,
+        uid,
+        starttime,
+        comm_len as u64,
+        path_len as u64,
+        name_len as u64,
+        label_count as u64,
+    )?;
 
     let (comm, comm_end) = lookup_string(item, APPS_LOOKUP_ITEM_HDR_SIZE, comm_off, comm_len)?;
     let (cgroup_path, path_end) =
@@ -1168,76 +1196,27 @@ impl<'a> AppsLookupBuilder<'a> {
             self.error = Some(NipcError::Overflow);
             return Err(NipcError::Overflow);
         }
-        if status != PID_LOOKUP_KNOWN && status != PID_LOOKUP_UNKNOWN {
-            self.error = Some(NipcError::BadLayout);
-            return Err(NipcError::BadLayout);
+        if let Err(err) = validate_apps_lookup_semantics(
+            status,
+            cgroup_status,
+            orchestrator,
+            ppid,
+            uid,
+            starttime,
+            comm.len() as u64,
+            cgroup_path.len() as u64,
+            cgroup_name.len() as u64,
+            labels.len() as u64,
+        ) {
+            self.error = Some(err);
+            return Err(err);
         }
-        if cgroup_status != APPS_CGROUP_KNOWN
-            && cgroup_status != APPS_CGROUP_UNKNOWN_RETRY_LATER
-            && cgroup_status != APPS_CGROUP_UNKNOWN_PERMANENT
-            && cgroup_status != APPS_CGROUP_HOST_ROOT
-        {
-            self.error = Some(NipcError::BadLayout);
-            return Err(NipcError::BadLayout);
-        }
-        if comm.len() > 15
-            || source_string_invalid(comm, status == PID_LOOKUP_KNOWN)
+        if source_string_invalid(comm, status == PID_LOOKUP_KNOWN)
             || source_string_invalid(cgroup_path, false)
             || source_string_invalid(cgroup_name, false)
         {
             self.error = Some(NipcError::BadLayout);
             return Err(NipcError::BadLayout);
-        }
-        if status == PID_LOOKUP_UNKNOWN {
-            if orchestrator != 0
-                || cgroup_status != 0
-                || ppid != 0
-                || uid != NIPC_UID_UNSET
-                || starttime != 0
-                || !comm.is_empty()
-                || !cgroup_path.is_empty()
-                || !cgroup_name.is_empty()
-                || !labels.is_empty()
-            {
-                self.error = Some(NipcError::BadLayout);
-                return Err(NipcError::BadLayout);
-            }
-        } else {
-            match cgroup_status {
-                APPS_CGROUP_KNOWN => {
-                    if cgroup_path.is_empty() {
-                        self.error = Some(NipcError::BadLayout);
-                        return Err(NipcError::BadLayout);
-                    }
-                }
-                APPS_CGROUP_UNKNOWN_RETRY_LATER => {
-                    if orchestrator != 0 || !cgroup_name.is_empty() || !labels.is_empty() {
-                        self.error = Some(NipcError::BadLayout);
-                        return Err(NipcError::BadLayout);
-                    }
-                }
-                APPS_CGROUP_UNKNOWN_PERMANENT => {
-                    if cgroup_path.is_empty()
-                        || orchestrator != 0
-                        || !cgroup_name.is_empty()
-                        || !labels.is_empty()
-                    {
-                        self.error = Some(NipcError::BadLayout);
-                        return Err(NipcError::BadLayout);
-                    }
-                }
-                APPS_CGROUP_HOST_ROOT => {
-                    if orchestrator != 0
-                        || !cgroup_path.is_empty()
-                        || !cgroup_name.is_empty()
-                        || !labels.is_empty()
-                    {
-                        self.error = Some(NipcError::BadLayout);
-                        return Err(NipcError::BadLayout);
-                    }
-                }
-                _ => unreachable!(),
-            }
         }
         let label_count = match checked_u16(labels.len()) {
             Ok(v) => v,

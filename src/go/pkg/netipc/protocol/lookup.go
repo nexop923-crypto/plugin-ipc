@@ -63,6 +63,48 @@ func invalidSourceString(data []byte, requireNonEmpty bool) bool {
 	return (requireNonEmpty && len(data) == 0) || bytes.IndexByte(data, 0) >= 0
 }
 
+func validateAppsLookupSemantics(status, cgroupStatus, orchestrator uint16, ppid, uid uint32, starttime uint64, commLen, pathLen, nameLen, labelCount uint64) error {
+	if status != PidLookupKnown && status != PidLookupUnknown {
+		return ErrBadLayout
+	}
+	if cgroupStatus != AppsCgroupKnown && cgroupStatus != AppsCgroupUnknownRetryLater &&
+		cgroupStatus != AppsCgroupUnknownPermanent && cgroupStatus != AppsCgroupHostRoot {
+		return ErrBadLayout
+	}
+	if commLen > 15 {
+		return ErrBadLayout
+	}
+	if status == PidLookupUnknown {
+		if orchestrator != 0 || cgroupStatus != 0 || ppid != 0 || uid != NipcUIDUnset ||
+			starttime != 0 || commLen != 0 || pathLen != 0 || nameLen != 0 || labelCount != 0 {
+			return ErrBadLayout
+		}
+		return nil
+	}
+	if commLen == 0 {
+		return ErrBadLayout
+	}
+	switch cgroupStatus {
+	case AppsCgroupKnown:
+		if pathLen == 0 {
+			return ErrBadLayout
+		}
+	case AppsCgroupUnknownRetryLater:
+		if orchestrator != 0 || nameLen != 0 || labelCount != 0 {
+			return ErrBadLayout
+		}
+	case AppsCgroupUnknownPermanent:
+		if pathLen == 0 || orchestrator != 0 || nameLen != 0 || labelCount != 0 {
+			return ErrBadLayout
+		}
+	case AppsCgroupHostRoot:
+		if orchestrator != 0 || pathLen != 0 || nameLen != 0 || labelCount != 0 {
+			return ErrBadLayout
+		}
+	}
+	return nil
+}
+
 func maxIntValue() int {
 	return int(^uint(0) >> 1)
 }
@@ -1147,42 +1189,8 @@ func decodeAppsLookupItem(item []byte) (*AppsLookupItemView, error) {
 	if ne.Uint16(item[0:2]) != 1 || ne.Uint32(item[20:24]) != 0 || ne.Uint16(item[58:60]) != 0 {
 		return nil, ErrBadLayout
 	}
-	if status != PidLookupKnown && status != PidLookupUnknown {
-		return nil, ErrBadLayout
-	}
-	if cgroupStatus != AppsCgroupKnown && cgroupStatus != AppsCgroupUnknownRetryLater &&
-		cgroupStatus != AppsCgroupUnknownPermanent && cgroupStatus != AppsCgroupHostRoot {
-		return nil, ErrBadLayout
-	}
-	if commLen > 15 {
-		return nil, ErrBadLayout
-	}
-	if status == PidLookupUnknown {
-		if orchestrator != 0 || cgroupStatus != 0 || ppid != 0 || uid != NipcUIDUnset ||
-			starttime != 0 || commLen != 0 || pathLen != 0 || nameLen != 0 || labelCount != 0 {
-			return nil, ErrBadLayout
-		}
-	} else if commLen == 0 {
-		return nil, ErrBadLayout
-	} else {
-		switch cgroupStatus {
-		case AppsCgroupKnown:
-			if pathLen == 0 {
-				return nil, ErrBadLayout
-			}
-		case AppsCgroupUnknownRetryLater:
-			if orchestrator != 0 || nameLen != 0 || labelCount != 0 {
-				return nil, ErrBadLayout
-			}
-		case AppsCgroupUnknownPermanent:
-			if pathLen == 0 || orchestrator != 0 || nameLen != 0 || labelCount != 0 {
-				return nil, ErrBadLayout
-			}
-		case AppsCgroupHostRoot:
-			if orchestrator != 0 || pathLen != 0 || nameLen != 0 || labelCount != 0 {
-				return nil, ErrBadLayout
-			}
-		}
+	if err := validateAppsLookupSemantics(status, cgroupStatus, orchestrator, ppid, uid, starttime, uint64(commLen), uint64(pathLen), uint64(nameLen), uint64(labelCount)); err != nil {
+		return nil, err
 	}
 	comm, commEnd, err := lookupString(item, AppsLookupItemHdr, commOff, commLen)
 	if err != nil {
@@ -1255,49 +1263,14 @@ func (b *AppsLookupBuilder) Add(status, cgroupStatus, orchestrator uint16, pid, 
 		b.err = ErrOverflow
 		return ErrOverflow
 	}
-	if status != PidLookupKnown && status != PidLookupUnknown {
-		b.err = ErrBadLayout
-		return ErrBadLayout
+	if err := validateAppsLookupSemantics(status, cgroupStatus, orchestrator, ppid, uid, starttime, uint64(len(comm)), uint64(len(cgroupPath)), uint64(len(cgroupName)), uint64(len(labels))); err != nil {
+		b.err = err
+		return err
 	}
-	if cgroupStatus != AppsCgroupKnown && cgroupStatus != AppsCgroupUnknownRetryLater &&
-		cgroupStatus != AppsCgroupUnknownPermanent && cgroupStatus != AppsCgroupHostRoot {
-		b.err = ErrBadLayout
-		return ErrBadLayout
-	}
-	if len(comm) > 15 || invalidSourceString(comm, status == PidLookupKnown) ||
+	if invalidSourceString(comm, status == PidLookupKnown) ||
 		invalidSourceString(cgroupPath, false) || invalidSourceString(cgroupName, false) {
 		b.err = ErrBadLayout
 		return ErrBadLayout
-	}
-	if status == PidLookupUnknown {
-		if orchestrator != 0 || cgroupStatus != 0 || ppid != 0 || uid != NipcUIDUnset ||
-			starttime != 0 || len(comm) != 0 || len(cgroupPath) != 0 || len(cgroupName) != 0 || len(labels) != 0 {
-			b.err = ErrBadLayout
-			return ErrBadLayout
-		}
-	} else {
-		switch cgroupStatus {
-		case AppsCgroupKnown:
-			if len(cgroupPath) == 0 {
-				b.err = ErrBadLayout
-				return ErrBadLayout
-			}
-		case AppsCgroupUnknownRetryLater:
-			if orchestrator != 0 || len(cgroupName) != 0 || len(labels) != 0 {
-				b.err = ErrBadLayout
-				return ErrBadLayout
-			}
-		case AppsCgroupUnknownPermanent:
-			if len(cgroupPath) == 0 || orchestrator != 0 || len(cgroupName) != 0 || len(labels) != 0 {
-				b.err = ErrBadLayout
-				return ErrBadLayout
-			}
-		case AppsCgroupHostRoot:
-			if orchestrator != 0 || len(cgroupPath) != 0 || len(cgroupName) != 0 || len(labels) != 0 {
-				b.err = ErrBadLayout
-				return ErrBadLayout
-			}
-		}
 	}
 	labelCount, ok := checkedU16Int(len(labels))
 	if !ok {

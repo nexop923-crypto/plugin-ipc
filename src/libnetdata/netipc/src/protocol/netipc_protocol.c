@@ -889,6 +889,67 @@ static bool source_string_invalid(const char *ptr, uint32_t len, bool require_no
     return ptr && bytes_have_nul(ptr, len);
 }
 
+static nipc_error_t apps_lookup_validate_semantics(uint16_t status,
+                                                   uint16_t cgroup_status,
+                                                   uint16_t orchestrator,
+                                                   uint32_t ppid,
+                                                   uint32_t uid,
+                                                   uint64_t starttime,
+                                                   uint64_t comm_len,
+                                                   uint64_t cgroup_path_len,
+                                                   uint64_t cgroup_name_len,
+                                                   uint64_t label_count)
+{
+    if (status != NIPC_PID_LOOKUP_KNOWN &&
+        status != NIPC_PID_LOOKUP_UNKNOWN)
+        return NIPC_ERR_BAD_LAYOUT;
+    if (cgroup_status != NIPC_APPS_CGROUP_KNOWN &&
+        cgroup_status != NIPC_APPS_CGROUP_UNKNOWN_RETRY_LATER &&
+        cgroup_status != NIPC_APPS_CGROUP_UNKNOWN_PERMANENT &&
+        cgroup_status != NIPC_APPS_CGROUP_HOST_ROOT)
+        return NIPC_ERR_BAD_LAYOUT;
+    if (comm_len > 15)
+        return NIPC_ERR_BAD_LAYOUT;
+
+    if (status == NIPC_PID_LOOKUP_UNKNOWN) {
+        if (orchestrator != 0 || cgroup_status != 0 ||
+            ppid != 0 || uid != NIPC_UID_UNSET ||
+            starttime != 0 || comm_len != 0 ||
+            cgroup_path_len != 0 || cgroup_name_len != 0 ||
+            label_count != 0)
+            return NIPC_ERR_BAD_LAYOUT;
+        return NIPC_OK;
+    }
+
+    if (comm_len == 0)
+        return NIPC_ERR_BAD_LAYOUT;
+
+    switch (cgroup_status) {
+    case NIPC_APPS_CGROUP_KNOWN:
+        if (cgroup_path_len == 0)
+            return NIPC_ERR_BAD_LAYOUT;
+        break;
+    case NIPC_APPS_CGROUP_UNKNOWN_RETRY_LATER:
+        if (orchestrator != 0 ||
+            cgroup_name_len != 0 || label_count != 0)
+            return NIPC_ERR_BAD_LAYOUT;
+        break;
+    case NIPC_APPS_CGROUP_UNKNOWN_PERMANENT:
+        if (cgroup_path_len == 0 || orchestrator != 0 ||
+            cgroup_name_len != 0 || label_count != 0)
+            return NIPC_ERR_BAD_LAYOUT;
+        break;
+    case NIPC_APPS_CGROUP_HOST_ROOT:
+        if (orchestrator != 0 || cgroup_path_len != 0 ||
+            cgroup_name_len != 0 || label_count != 0)
+            return NIPC_ERR_BAD_LAYOUT;
+        break;
+    default:
+        return NIPC_ERR_BAD_LAYOUT;
+    }
+    return NIPC_OK;
+}
+
 static bool lookup_label_storage_add_u64(uint64_t *item_size, const nipc_lookup_label_view_t *label)
 {
     if (add_u64_over_limit(*item_size, label->key.len, UINT32_MAX, item_size))
@@ -1753,58 +1814,19 @@ static nipc_error_t apps_lookup_decode_item_bytes(const uint8_t *item,
 
     if (wire.layout_version != 1 || wire.reserved0 != 0 || wire.reserved1 != 0)
         return NIPC_ERR_BAD_LAYOUT;
-    if (wire.status != NIPC_PID_LOOKUP_KNOWN &&
-        wire.status != NIPC_PID_LOOKUP_UNKNOWN)
-        return NIPC_ERR_BAD_LAYOUT;
-    if (wire.cgroup_status != NIPC_APPS_CGROUP_KNOWN &&
-        wire.cgroup_status != NIPC_APPS_CGROUP_UNKNOWN_RETRY_LATER &&
-        wire.cgroup_status != NIPC_APPS_CGROUP_UNKNOWN_PERMANENT &&
-        wire.cgroup_status != NIPC_APPS_CGROUP_HOST_ROOT)
-        return NIPC_ERR_BAD_LAYOUT;
-    if (wire.comm_length > 15)
-        return NIPC_ERR_BAD_LAYOUT;
-
-    if (wire.status == NIPC_PID_LOOKUP_UNKNOWN) {
-        if (wire.orchestrator != 0 || wire.cgroup_status != 0 ||
-            wire.ppid != 0 || wire.uid != NIPC_UID_UNSET ||
-            wire.starttime != 0 || wire.comm_length != 0 ||
-            wire.cgroup_path_length != 0 || wire.cgroup_name_length != 0 ||
-            wire.label_count != 0)
-            return NIPC_ERR_BAD_LAYOUT;
-    } else {
-        if (wire.comm_length == 0)
-            return NIPC_ERR_BAD_LAYOUT;
-        switch (wire.cgroup_status) {
-        case NIPC_APPS_CGROUP_KNOWN:
-            if (wire.cgroup_path_length == 0)
-                return NIPC_ERR_BAD_LAYOUT;
-            break;
-        case NIPC_APPS_CGROUP_UNKNOWN_RETRY_LATER:
-            if (wire.orchestrator != 0 ||
-                wire.cgroup_name_length != 0 || wire.label_count != 0)
-                return NIPC_ERR_BAD_LAYOUT;
-            break;
-        case NIPC_APPS_CGROUP_UNKNOWN_PERMANENT:
-            if (wire.cgroup_path_length == 0 || wire.orchestrator != 0 ||
-                wire.cgroup_name_length != 0 || wire.label_count != 0)
-                return NIPC_ERR_BAD_LAYOUT;
-            break;
-        case NIPC_APPS_CGROUP_HOST_ROOT:
-            if (wire.orchestrator != 0 || wire.cgroup_path_length != 0 ||
-                wire.cgroup_name_length != 0 || wire.label_count != 0)
-                return NIPC_ERR_BAD_LAYOUT;
-            break;
-        default:
-            return NIPC_ERR_BAD_LAYOUT;
-        }
-    }
+    nipc_error_t err = apps_lookup_validate_semantics(
+        wire.status, wire.cgroup_status, wire.orchestrator,
+        wire.ppid, wire.uid, wire.starttime, wire.comm_length,
+        wire.cgroup_path_length, wire.cgroup_name_length, wire.label_count);
+    if (err != NIPC_OK)
+        return err;
 
     nipc_str_view_t comm, cgroup_path, cgroup_name;
     uint64_t comm_end, path_end, name_end;
-    nipc_error_t err = lookup_string_view(item, item_len,
-                                          NIPC_APPS_LOOKUP_ITEM_HDR_SIZE,
-                                          wire.comm_offset, wire.comm_length,
-                                          &comm, &comm_end);
+    err = lookup_string_view(item, item_len,
+                             NIPC_APPS_LOOKUP_ITEM_HDR_SIZE,
+                             wire.comm_offset, wire.comm_length,
+                             &comm, &comm_end);
     if (err != NIPC_OK)
         return err;
     err = lookup_string_view(item, item_len,
@@ -1998,65 +2020,16 @@ nipc_error_t nipc_apps_lookup_builder_add(
         b->error = NIPC_ERR_OVERFLOW;
         return b->error;
     }
-    if (status != NIPC_PID_LOOKUP_KNOWN && status != NIPC_PID_LOOKUP_UNKNOWN) {
-        b->error = NIPC_ERR_BAD_LAYOUT;
+    b->error = apps_lookup_validate_semantics(
+        status, cgroup_status, orchestrator, ppid, uid, starttime,
+        comm_len, cgroup_path_len, cgroup_name_len, label_count);
+    if (b->error != NIPC_OK)
         return b->error;
-    }
-    if (cgroup_status != NIPC_APPS_CGROUP_KNOWN &&
-        cgroup_status != NIPC_APPS_CGROUP_UNKNOWN_RETRY_LATER &&
-        cgroup_status != NIPC_APPS_CGROUP_UNKNOWN_PERMANENT &&
-        cgroup_status != NIPC_APPS_CGROUP_HOST_ROOT) {
-        b->error = NIPC_ERR_BAD_LAYOUT;
-        return b->error;
-    }
-    if (comm_len > 15 ||
-        source_string_invalid(comm, comm_len, status == NIPC_PID_LOOKUP_KNOWN) ||
+    if (source_string_invalid(comm, comm_len, status == NIPC_PID_LOOKUP_KNOWN) ||
         source_string_invalid(cgroup_path, cgroup_path_len, false) ||
         source_string_invalid(cgroup_name, cgroup_name_len, false)) {
         b->error = NIPC_ERR_BAD_LAYOUT;
         return b->error;
-    }
-
-    if (status == NIPC_PID_LOOKUP_UNKNOWN) {
-        if (orchestrator != 0 || cgroup_status != 0 || ppid != 0 ||
-            uid != NIPC_UID_UNSET || starttime != 0 || comm_len != 0 ||
-            cgroup_path_len != 0 || cgroup_name_len != 0 || label_count != 0) {
-            b->error = NIPC_ERR_BAD_LAYOUT;
-            return b->error;
-        }
-    } else {
-        switch (cgroup_status) {
-        case NIPC_APPS_CGROUP_KNOWN:
-            if (cgroup_path_len == 0) {
-                b->error = NIPC_ERR_BAD_LAYOUT;
-                return b->error;
-            }
-            break;
-        case NIPC_APPS_CGROUP_UNKNOWN_RETRY_LATER:
-            if (orchestrator != 0 ||
-                cgroup_name_len != 0 || label_count != 0) {
-                b->error = NIPC_ERR_BAD_LAYOUT;
-                return b->error;
-            }
-            break;
-        case NIPC_APPS_CGROUP_UNKNOWN_PERMANENT:
-            if (cgroup_path_len == 0 || orchestrator != 0 ||
-                cgroup_name_len != 0 || label_count != 0) {
-                b->error = NIPC_ERR_BAD_LAYOUT;
-                return b->error;
-            }
-            break;
-        case NIPC_APPS_CGROUP_HOST_ROOT:
-            if (orchestrator != 0 || cgroup_path_len != 0 ||
-                cgroup_name_len != 0 || label_count != 0) {
-                b->error = NIPC_ERR_BAD_LAYOUT;
-                return b->error;
-            }
-            break;
-        default:
-            b->error = NIPC_ERR_BAD_LAYOUT;
-            return b->error;
-        }
     }
 
     uint64_t item_start_u64;
