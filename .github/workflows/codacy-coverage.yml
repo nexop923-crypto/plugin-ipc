@@ -1,0 +1,125 @@
+name: Codacy Coverage
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/codacy-coverage.yml
+      - src/**
+      - tests/**
+      - CMakeLists.txt
+      - Makefile
+      - .gitignore
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/codacy-coverage.yml
+      - src/**
+      - tests/**
+      - CMakeLists.txt
+      - Makefile
+      - .gitignore
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    name: C, Rust, and Go Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: src/go/go.mod
+          cache: false
+
+      - name: Install coverage tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcovr
+
+      - name: Generate coverage reports
+        run: bash tests/generate-codacy-coverage.sh
+
+      - name: Upload coverage report artifact
+        if: always() && hashFiles('coverage/codacy/*') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codacy-coverage-reports
+          path: coverage/codacy/
+          retention-days: 5
+
+      - name: Verify Codacy account token
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          CODACY_API_TOKEN: ${{ secrets.CODACY_API_TOKEN }}
+        run: |
+          if [ -z "${CODACY_API_TOKEN}" ]; then
+            echo "CODACY_API_TOKEN secret is required to upload coverage to Codacy." >&2
+            exit 1
+          fi
+
+      - name: Upload C coverage to Codacy
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          CODACY_API_TOKEN: ${{ secrets.CODACY_API_TOKEN }}
+          CODACY_ORGANIZATION_PROVIDER: gh
+          CODACY_USERNAME: netdata
+          CODACY_PROJECT_NAME: plugin-ipc
+        run: |
+          bash <(curl -Ls https://coverage.codacy.com/get.sh) report \
+            --partial \
+            --force-coverage-parser lcov \
+            -l C \
+            -r coverage/codacy/c-lcov.info
+
+      - name: Upload Rust coverage to Codacy
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          CODACY_API_TOKEN: ${{ secrets.CODACY_API_TOKEN }}
+          CODACY_ORGANIZATION_PROVIDER: gh
+          CODACY_USERNAME: netdata
+          CODACY_PROJECT_NAME: plugin-ipc
+        run: |
+          bash <(curl -Ls https://coverage.codacy.com/get.sh) report \
+            --partial \
+            --force-coverage-parser lcov \
+            -l Rust \
+            -r coverage/codacy/rust-lcov.info
+
+      - name: Upload Go coverage to Codacy
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          CODACY_API_TOKEN: ${{ secrets.CODACY_API_TOKEN }}
+          CODACY_ORGANIZATION_PROVIDER: gh
+          CODACY_USERNAME: netdata
+          CODACY_PROJECT_NAME: plugin-ipc
+        run: |
+          bash <(curl -Ls https://coverage.codacy.com/get.sh) report \
+            --partial \
+            --force-coverage-parser go \
+            -r coverage/codacy/go-coverage.out
+
+      - name: Finalize Codacy coverage upload
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          CODACY_API_TOKEN: ${{ secrets.CODACY_API_TOKEN }}
+          CODACY_ORGANIZATION_PROVIDER: gh
+          CODACY_USERNAME: netdata
+          CODACY_PROJECT_NAME: plugin-ipc
+        run: bash <(curl -Ls https://coverage.codacy.com/get.sh) final
