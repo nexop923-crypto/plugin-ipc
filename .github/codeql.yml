@@ -11,15 +11,8 @@ query-filters:
   # no current alerts for them, or when the query is fixed in the same change.
   - exclude:
       id:
-        - cpp/constant-comparison
         - cpp/poorly-documented-function
         - cpp/redundant-null-check-simple
-        - cpp/toctou-race-condition
-        - cpp/unused-local-variable
-        - cpp/unused-static-function
-        - go/incorrect-integer-conversion
-        - go/unhandled-writable-file-close
-        - go/useless-assignment-to-local
         - rust/unused-variable
 
 paths:

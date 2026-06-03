@@ -11,7 +11,6 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <inttypes.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -64,8 +63,8 @@ static int build_shm_path(char *dst, size_t dst_len,
     if (validate_service_name(service_name) < 0)
         return -2; /* invalid service name */
 
-    int n = snprintf(dst, dst_len, "%s/%s-%016" PRIx64 ".ipcshm",
-                     run_dir, service_name, session_id);
+    int n = snprintf(dst, dst_len, "%s/%s-%016llx.ipcshm",
+                     run_dir, service_name, (unsigned long long)session_id);
     if (n < 0 || (size_t)n >= dst_len)
         return -1;
     return 0;

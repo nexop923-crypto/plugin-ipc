@@ -131,3 +131,4 @@ jobs:
           CODACY_STATUS: ${{ steps.codacy.outputs.status }}
         run: |
           echo "Codacy local analysis reported findings or non-fatal tool results with status ${CODACY_STATUS}; SARIF was generated for review." >&2
+          exit 1

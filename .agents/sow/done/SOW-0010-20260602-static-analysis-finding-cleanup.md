@@ -4,8 +4,8 @@
 
 Status: completed
 
-Sub-state: Codacy Cloud remaining findings were fixed locally and scanner
-validation passed.
+Sub-state: Completed after restoring the approved hygiene checks and validating
+the scanner/test matrix.
 
 ## Requirements
 
@@ -189,6 +189,10 @@ Open decisions:
 - 2026-06-02: The user decided that active scanner findings must be fixed or the
   rule must be removed/tuned. Keeping a rule while hiding its output from one UI
   is not acceptable.
+- 2026-06-03: The user approved restoring all recommended hygiene checks:
+  staticcheck as a hard gate, Codacy Local as a hard gate, selected CodeQL
+  hygiene/security query IDs, and selected gosec rules for unchecked errors,
+  integer conversions, file permissions, path traversal, and unsafe usage.
 
 ## Plan
 
@@ -234,20 +238,51 @@ Open decisions:
   disabled, 7 tools reconfigured, 2,727 patterns enabled, and reanalysis
   requested.
 
+### 2026-06-03
+
+- Recorded the user decision to restore all recommended hygiene checks.
+- Made `staticcheck` a hard gate in `.github/workflows/static-analysis.yml`.
+- Made Codacy Local Analysis fail the workflow when the Codacy Analysis CLI
+  reports a non-zero status.
+- Restored selected CodeQL hygiene/security query IDs by removing their
+  `query-filters` exclusions.
+- Restored gosec rules `G103`, `G104`, `G115`, `G304`, `G306`, and `G703`;
+  only `G404` remains excluded because the approved restore list did not include
+  insecure random findings.
+- Fixed production Go integer-conversion findings in protocol and raw service
+  code with checked conversions.
+- Converted unchecked cleanup calls to explicit ignored cleanup results, and
+  added narrow `#nosec` comments only for intentional mmap, futex, syscall, and
+  fixture path patterns.
+- Fixed fixture and benchmark findings from restored gosec rules.
+- Removed Codacy Revive from local Codacy configuration after direct Revive
+  execution passed but the Codacy adapter failed with `findings is not
+  iterable`.
+- Added Semgrep-only excludes for parser-incompatible Windows C fixtures and
+  two scripts that are still covered by ShellCheck, cppcheck, CodeQL, or the
+  dedicated static workflow.
+- Changed the production C SHM path format string to avoid a Semgrep parser
+  failure on the `PRIx64` macro while preserving the same hexadecimal session
+  ID output.
+
 ## Validation
 
 Acceptance criteria evidence:
 
-- Current enabled Codacy local rules produce zero findings with 7 enabled tools
-  and 2,727 enabled patterns.
-- Current GitHub Code Scanning result-bearing CodeQL query IDs are excluded via
-  `.github/codeql.yml` `query-filters`.
-- Current GitHub gosec result-bearing rule IDs are excluded in
-  `.github/workflows/static-analysis.yml`, while gosec remains active for all
-  other rules and will fail the job if future enabled findings appear.
-- Semgrep OSS now scans secrets only in
-  `.github/workflows/supply-chain-security.yml`; Codacy Semgrep/Opengrep
-  remains active for the tuned zero-current-finding pattern set.
+- Codacy local analysis now produces zero findings and zero tool errors with
+  6 enabled tools and 2,706 enabled patterns.
+- `.github/codeql.yml` restores the approved CodeQL hygiene/security query IDs.
+  The remaining excluded query IDs are `cpp/poorly-documented-function`,
+  `cpp/redundant-null-check-simple`, and `rust/unused-variable`.
+- `.github/workflows/static-analysis.yml` restores gosec rules
+  `G103`, `G104`, `G115`, `G304`, `G306`, and `G703`; only `G404` remains
+  excluded.
+- `staticcheck` is a hard gate in `.github/workflows/static-analysis.yml`.
+- `.github/workflows/codacy-analysis.yml` now fails when the Codacy Analysis
+  CLI reports a non-zero status.
+- Codacy Semgrep/Opengrep remains active; only parser-incompatible Windows C
+  fixtures and two scripts are excluded for Semgrep, while other scanners still
+  cover them.
 - Scorecard is no longer uploaded as Code Scanning SARIF; it remains available
   as a JSON posture artifact.
 
@@ -259,15 +294,14 @@ Tests or equivalent validation:
   `.github/workflows/static-analysis.yml`, and
   `.github/workflows/supply-chain-security.yml`.
 - `actionlint` passed.
-- `codacy-analysis analyze . --inspect --output-format json --output /tmp/plugin-ipc-codacy-inspect-sow0010-after.json`
-  reported 7 ready tools and zero unavailable tools.
-- `codacy-analysis analyze . --output-format sarif --output /tmp/plugin-ipc-codacy-sow0010-after.sarif --parallel-tools 2 --tool-timeout 900000`
-  reported zero issues. The CLI logged 15 non-fatal tool errors: 14 Semgrep
-  and 1 Revive parser/runtime errors.
+- `codacy-analysis analyze . --install-dependencies --output-format json --output /tmp/plugin-ipc-codacy.json --parallel-tools 2 --tool-timeout 900000`
+  reported zero issues and zero tool errors.
+- `codacy-analysis analyze . --install-dependencies --output-format sarif --output /tmp/plugin-ipc-codacy.sarif --parallel-tools 2 --tool-timeout 900000`
+  reported zero SARIF results.
 - `semgrep scan --metrics=off --config p/secrets --sarif --output /tmp/plugin-ipc-semgrep-secrets.sarif .`
   completed with zero findings.
-- Local gosec with `-exclude=G103,G104,G115,G304,G306,G404,G703` exited with
-  status 0 in `src/go`, `tests/fixtures/go`, and `bench/drivers/go`.
+- Local gosec with only `-exclude=G404` exited with status 0 in `src/go`,
+  `tests/fixtures/go`, and `bench/drivers/go`.
 - `git diff --check` passed.
 
 Real-use evidence:
@@ -342,24 +376,23 @@ Lessons:
 
 Follow-up mapping:
 
-- No deferred item remains. Current result-bearing rules were either removed
-  from the active scanner set or kept with zero local findings. Re-enabling
-  removed broad rules would be a new cleanup/hardening SOW, not unfinished work
-  in this SOW.
+- No deferred item remains. Approved hygiene rules were restored and cleaned.
+  Remaining disabled broad debt rules were outside the approved restoration set
+  and would require a new cleanup/hardening SOW before they can be enabled as
+  hard gates.
 
 ## Outcome
 
 Completed.
 
-- Codacy local analysis now runs 7 enabled tools and 2,727 enabled patterns
-  with zero findings.
+- Codacy local analysis now runs 6 enabled tools and 2,706 enabled patterns
+  with zero findings and zero tool errors.
 - Codacy Cloud accepted the tuned config import: 4 tools disabled, 7 tools
   reconfigured, and repository reanalysis requested.
-- GitHub Code Scanning producers were tuned so current result-bearing rules are
-  removed from active upload paths instead of hidden in GitHub only.
-- Go staticcheck annotations from the previous commit were fixed by preserving
-  overflow checks in lookup offset calculations and removing an unused POSIX
-  UDS helper.
+- GitHub Code Scanning producers were tuned so approved gosec and CodeQL
+  hygiene rules are active again instead of hidden in GitHub only.
+- Go scanner findings from the restored rules were fixed or narrowly
+  suppressed with justification.
 - No protocol behavior, public docs, or public integration skills changed.
 
 ## Lessons Extracted
@@ -372,7 +405,7 @@ Completed.
 
 ## Followup
 
-None yet.
+None.
 
 ## Regression Log
 
@@ -484,3 +517,100 @@ Artifact updates:
 - Specs: no protocol/API behavior changed.
 - Runtime project skills: no project runtime skill update was needed.
 - End-user/operator docs and skills: no public SDK workflow changed.
+
+## Regression - 2026-06-03 Hygiene Check Restoration
+
+What broke:
+
+- The previous zero-finding baseline intentionally weakened useful hygiene
+  checks. The user accepted the recommendation to restore them so scanner
+  cleanliness does not come from disabling valuable checks.
+
+Evidence:
+
+- `staticcheck` is still configured with `continue-on-error: true` in
+  `.github/workflows/static-analysis.yml`, so it annotates but does not hard
+  fail.
+- `.github/workflows/codacy-analysis.yml` records the Codacy Analysis CLI
+  status but the reporting step does not fail on non-zero status.
+- `.github/codeql.yml` excludes hygiene/security query IDs that should be
+  restored for this SDK: `cpp/constant-comparison`,
+  `cpp/toctou-race-condition`, `cpp/unused-local-variable`,
+  `cpp/unused-static-function`, `go/incorrect-integer-conversion`,
+  `go/unhandled-writable-file-close`, and `go/useless-assignment-to-local`.
+- `.github/workflows/static-analysis.yml` excludes gosec rules that should be
+  restored or path-scoped: `G103`, `G104`, `G115`, `G304`, `G306`, and `G703`.
+- Official CodeQL documentation confirms query suite filters remove or keep
+  queries by stable query metadata such as `id`.
+- Staticcheck documentation identifies the `SA` checks as correctness checks.
+- gosec documents the relevant rule IDs as security checks for unsafe use,
+  unchecked errors, integer conversion, file path/path traversal, and file
+  permissions.
+
+Why previous validation missed it:
+
+- The prior cleanup optimized for a zero-current-finding baseline after a large
+  scanner rollout. That was useful to stop existing debt from blocking every
+  change, but it left valuable hygiene rules weaker than the project should
+  keep long term.
+
+Repair plan:
+
+- Make `staticcheck` a hard gate.
+- Make Codacy Local Analysis fail the workflow when the CLI reports findings.
+- Restore the selected CodeQL query IDs listed above.
+- Restore gosec `G104`, `G115`, and `G306` globally.
+- Restore or path-scope gosec `G103`, `G304`, and `G703`; production code should
+  be scanned, while intentional fixture/test patterns may receive narrow
+  suppressions with justification.
+- Run restored checks locally, then fix true positives or add narrow justified
+  suppressions where the pattern is intentional and test-only.
+
+Validation:
+
+- `cd src/go && go test ./...` passed.
+- `cd tests/fixtures/go && go test ./...` passed.
+- `cd bench/drivers/go && go test ./...` passed.
+- `cd src/go && go vet ./... && "$(go env GOPATH)/bin/govulncheck" ./...`
+  passed with no vulnerabilities found.
+- `cd tests/fixtures/go && go vet ./... && "$(go env GOPATH)/bin/govulncheck" ./...`
+  passed with no vulnerabilities found.
+- `cd bench/drivers/go && go vet ./... && "$(go env GOPATH)/bin/govulncheck" ./...`
+  passed with no vulnerabilities found.
+- `cd src/go && "$(go env GOPATH)/bin/staticcheck" ./...` passed.
+- `cd tests/fixtures/go && "$(go env GOPATH)/bin/staticcheck" ./...`
+  passed.
+- `cd bench/drivers/go && "$(go env GOPATH)/bin/staticcheck" ./...`
+  passed.
+- `actionlint` passed.
+- `cd src/go && "$(go env GOPATH)/bin/gosec" -quiet -fmt json -out /tmp/plugin-ipc-gosec-src-go-after.json -exclude=G404 ./...`
+  exited 0 and produced no findings.
+- `cd tests/fixtures/go && "$(go env GOPATH)/bin/gosec" -quiet -fmt json -out /tmp/plugin-ipc-gosec-fixtures-go-after.json -exclude=G404 ./...`
+  exited 0 and produced no findings.
+- `cd bench/drivers/go && "$(go env GOPATH)/bin/gosec" -quiet -fmt json -out /tmp/plugin-ipc-gosec-bench-go-after.json -exclude=G404 ./...`
+  exited 0 and produced no findings.
+- `codacy-analysis analyze . --install-dependencies --output-format json --output /tmp/plugin-ipc-codacy.json --parallel-tools 2 --tool-timeout 900000`
+  exited 0 with 0 issues and 0 tool errors across 6 tools: Checkov,
+  Semgrep/Opengrep, Trivy, cppcheck, ShellCheck, and Spectral.
+- `codacy-analysis analyze . --install-dependencies --output-format sarif --output /tmp/plugin-ipc-codacy.sarif --parallel-tools 2 --tool-timeout 900000`
+  exited 0 and generated SARIF with 0 results.
+- `make` passed and rebuilt the changed C SHM source plus Go benchmark binary.
+- `/usr/bin/ctest --test-dir build --output-on-failure` passed all 46 tests.
+  The default `ctest` command on this workstation resolves to a broken
+  Python wrapper at `~/.local/bin/ctest`; the system CTest binary was used
+  directly.
+
+Artifact updates:
+
+- AGENTS.md: no update needed; existing project scanner and validation commands
+  remain accurate.
+- Runtime project skills: no update needed; there are still no runtime
+  project-specific skills and no reusable workflow was missing from AGENTS.md.
+- Specs: no protocol/API behavior changed. The production C format string still
+  writes the same 16-character lowercase hexadecimal session ID.
+- End-user/operator docs: no update needed; no public SDK behavior or operator
+  workflow changed.
+- End-user/operator skills: `docs/netipc-integrator-skill.md` is unaffected
+  because public integration guidance did not change.
+- SOW lifecycle: this reopened regression is completed and the SOW will be
+  moved back to `done/` in the same commit as the restored scanner changes.

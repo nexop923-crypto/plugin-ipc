@@ -151,7 +151,6 @@ jobs:
           go vet ./...
 
       - name: Run Staticcheck
-        continue-on-error: true
         working-directory: ${{ matrix.module }}
         run: '"$(go env GOPATH)/bin/staticcheck" ./...'
 
@@ -168,7 +167,7 @@ jobs:
             -quiet \
             -fmt sarif \
             -out gosec.sarif \
-            -exclude=G103,G104,G115,G304,G306,G404,G703 \
+            -exclude=G404 \
             ./...
           status=$?
           echo "status=$status" >> "$GITHUB_OUTPUT"
