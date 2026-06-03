@@ -4,7 +4,7 @@
 
 Status: completed
 
-Sub-state: coverage workflow implemented and locally validated; maintainability hotspot remediation is tracked in `SOW-0014`.
+Sub-state: coverage workflow implemented; remote C build regression repaired locally and queued for remote revalidation after push.
 
 ## Requirements
 
@@ -431,6 +431,47 @@ enabled; real hotspot remediation is tracked separately.
 
 - `SOW-0014`: source complexity and duplication hotspot remediation.
 
-## Regression Log
+## Regression - 2026-06-03
 
-None yet.
+What broke:
+
+- GitHub Actions run `26877754854`, job `79269490556`, failed in the new
+  `Codacy Coverage` workflow before upload.
+- Failure occurred during `Generate coverage reports` while building
+  `tests/fixtures/c/test_stress.c`.
+- Remote evidence: GCC 13 on Ubuntu 24.04 rejected the sanitizer guard at
+  `tests/fixtures/c/test_stress.c:840` with `missing binary operator before
+  token "("`.
+
+Why previous validation missed it:
+
+- Local validation used a newer GCC that accepted the existing guard.
+- The broken expression mixed `defined(__has_feature)` with direct
+  `__has_feature(...)` calls in the same preprocessor expression; GCC 13 still
+  parsed the function-like expression even when the macro was absent.
+
+Repair plan:
+
+- Define a local `__has_feature(feature)` compatibility macro as `0` when the
+  compiler does not provide it.
+- Simplify the sanitizer guard to call `__has_feature(...)` directly after the
+  compatibility macro is defined.
+- Re-run local C build/tests and final CI workflow checks.
+
+Validation:
+
+- Targeted local validation passed:
+  - configured coverage build with `cmake -S . -B build-codacy-coverage
+    -DCMAKE_BUILD_TYPE=Debug -DNETIPC_COVERAGE=ON -DCMAKE_C_COMPILER=gcc`.
+  - built `test_stress` with `cmake --build build-codacy-coverage --target
+    test_stress`.
+  - ran `build-codacy-coverage/bin/test_stress`; result was 32 passed, 0
+    failed.
+- Remote GitHub Actions validation will be checked after the repair commit is
+  pushed.
+
+Artifact updates:
+
+- SOW lifecycle: reopened from `done/` to `current/` for this regression.
+- Specs/docs/skills: no protocol/API/operator behavior changes expected from
+  this test portability fix.

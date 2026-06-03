@@ -31,6 +31,10 @@
 #include <unistd.h>
 #include <dirent.h>
 
+#ifndef __has_feature
+#define __has_feature(feature) 0
+#endif
+
 /* ------------------------------------------------------------------ */
 /*  Test infrastructure                                                */
 /* ------------------------------------------------------------------ */
@@ -837,7 +841,7 @@ static void test_long_running_stability(void)
      * (ASAN shadow memory, TSAN metadata), so use a larger tolerance. */
     long vmrss_growth = vmrss_end - vmrss_start;
 #if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__) || \
-    (defined(__has_feature) && (__has_feature(address_sanitizer) || __has_feature(thread_sanitizer)))
+    __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
     check("memory stable (< 256MB growth, sanitizer)", vmrss_growth < 262144);
 #else
     check("memory stable (< 4MB growth)", vmrss_growth < 4096);
