@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: option A selected; PRs are being reviewed, refreshed, validated, and either merged or closed only when obsolete.
+Sub-state: all three Dependabot PRs were handled on `main`, remote validation passed, and the PRs are closed as obsolete.
 
 ## Requirements
 
@@ -177,13 +177,42 @@ Open decisions:
   - `libc` lock entry `0.2.183` -> `0.2.186`.
   - `proptest` lock entry `1.10.0` -> `1.11.0`.
   - `rand` lock entry `0.9.3` -> `0.9.4`.
+- Committed and pushed `6e27ee6` (`Apply Dependabot maintenance updates`) to
+  `main`.
+- Verified GitHub Actions on pushed commit `6e27ee6`:
+  - `Dependabot Updates`: success.
+  - `Supply Chain Security`: success.
+  - `Runtime Safety`: success.
+  - `CodeQL`: success.
+  - `Codacy Local Analysis`: success.
+  - `Static Analysis`: success.
+- Verified GitHub Code Scanning open-alert count is 0 after the pushed state.
+- Closed PR `#2` as obsolete because `rand` `0.9.4` is already on `main`.
+- Closed PR `#3` as obsolete because `libc` `0.2.186` and `proptest`
+  `1.11.0` are already on `main`.
+- Verified PR `#5` was already closed after the equivalent workflow updates
+  landed on `main`; manual close with a comment was not accepted because the PR
+  was already closed.
+- Verified there are no open GitHub PRs after this maintenance.
 
 ## Validation
 
 Acceptance criteria evidence:
 
-- Local `main` now contains the exact updates requested by PRs `#2`, `#3`, and
-  `#5`; final PR closure is pending push and remote validation.
+- PR `#2` is closed, not merged, with `closedAt`
+  `2026-06-03T07:55:37Z`; its `rand` `0.9.4` update is present on `main` in
+  `6e27ee6`.
+- PR `#3` is closed, not merged, with `closedAt`
+  `2026-06-03T07:55:37Z`; its `libc` `0.2.186` and `proptest` `1.11.0`
+  updates are present on `main` in `6e27ee6`.
+- PR `#5` is closed, not merged, with `closedAt`
+  `2026-06-03T07:51:25Z`; its GitHub Actions updates are present on `main` in
+  `6e27ee6`.
+- `gh pr list --state open --limit 20` returned an empty list.
+- Main workflow runs for `6e27ee6` all completed successfully:
+  `Dependabot Updates`, `Supply Chain Security`, `Runtime Safety`, `CodeQL`,
+  `Codacy Local Analysis`, and `Static Analysis`.
+- GitHub Code Scanning open-alert query returned 0.
 
 Tests or equivalent validation:
 
@@ -204,7 +233,9 @@ Tests or equivalent validation:
 
 Real-use evidence:
 
-- GitHub Actions validation is pending after push.
+- GitHub Actions ran on commit `6e27ee6` after push and completed
+  successfully for all scanner and supply-chain workflows.
+- GitHub PR state now shows PRs `#2`, `#3`, and `#5` closed and zero open PRs.
 
 Reviewer findings:
 
@@ -215,6 +246,7 @@ Same-failure scan:
 
 - Current local OSV and Codacy scans reported 0 issues after applying the
   updates.
+- GitHub Code Scanning open-alert query reported 0 after the pushed state.
 
 Sensitive data gate:
 
@@ -231,8 +263,8 @@ Artifact maintenance gate:
 - End-user/operator docs: no update needed; no user/operator workflow changed.
 - End-user/operator skills: no update needed; no public integration guidance
   changed.
-- SOW lifecycle: implementation is in progress pending push, remote workflow
-  validation, PR closure, and final move to `done/`.
+- SOW lifecycle: SOW is marked completed and moved to `done/` with the final
+  lifecycle commit.
 
 Specs update:
 
@@ -253,23 +285,35 @@ End-user/operator skills update:
 
 Lessons:
 
-- Pending final remote validation.
+- Dependabot workflow branches can be blocked by token scope when they modify
+  workflow files; applying the exact updates on `main` is a valid maintenance
+  path when the final workflow and code-scanning gates pass.
+- Dirty lockfile PRs should not be merged blindly; applying the target lock
+  update locally and validating the resolved lockfile keeps the final evidence
+  attributable to the resulting `main` state.
 
 Follow-up mapping:
 
-- Pending final remote validation.
+- No follow-up SOW is needed; all three PRs are closed, `main` is green, and
+  GitHub Code Scanning has 0 open alerts.
 
 ## Outcome
 
-Pending.
+Completed. The three open Dependabot PRs were made obsolete by commit
+`6e27ee6`, remote validation passed on `main`, GitHub Code Scanning has zero
+open alerts, and no open PRs remain.
 
 ## Lessons Extracted
 
-Pending.
+- Workflow-file update PRs may require a token with `workflow` scope for branch
+  refresh operations.
+- For scanner hygiene work, final evidence should be collected from both local
+  tools and GitHub after push because local SARIF generation alone does not
+  prove the repository-visible code-scanning state.
 
 ## Followup
 
-None yet.
+None.
 
 ## Regression Log
 
