@@ -57,6 +57,18 @@ uint32_t nipc_service_common_cgroups_response_payload_default(void)
     return NIPC_CLIENT_BUF_DEFAULT;
 }
 
+/* Lookup services batch dynamic keys, so their request buffer starts at the typed response size. */
+uint32_t nipc_service_common_lookup_request_payload_default(void)
+{
+    return NIPC_CLIENT_BUF_DEFAULT;
+}
+
+/* Typed services expose one batch-count knob; level 1 keeps request/response counts symmetric. */
+uint32_t nipc_service_common_typed_response_batch_items(uint32_t max_request_batch_items)
+{
+    return max_request_batch_items;
+}
+
 static void copy_cstr_field(char *dst, size_t dst_size, const char *src)
 {
     if (!src || dst_size == 0)

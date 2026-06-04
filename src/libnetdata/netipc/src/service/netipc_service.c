@@ -208,7 +208,8 @@ static nipc_uds_client_config_t service_client_config_to_transport(
     transport.preferred_profiles = config->preferred_profiles;
     transport.max_request_batch_items = config->max_request_batch_items;
     transport.max_response_payload_bytes = config->max_response_payload_bytes;
-    transport.max_response_batch_items = config->max_request_batch_items;
+    transport.max_response_batch_items =
+        nipc_service_common_typed_response_batch_items(config->max_request_batch_items);
     transport.auth_token = config->auth_token;
 
     return transport;
@@ -226,7 +227,8 @@ static nipc_uds_server_config_t service_server_config_to_transport(
     transport.preferred_profiles = config->preferred_profiles;
     transport.max_request_batch_items = config->max_request_batch_items;
     transport.max_response_payload_bytes = config->max_response_payload_bytes;
-    transport.max_response_batch_items = config->max_request_batch_items;
+    transport.max_response_batch_items =
+        nipc_service_common_typed_response_batch_items(config->max_request_batch_items);
     transport.auth_token = config->auth_token;
 
     return transport;
@@ -1341,7 +1343,7 @@ nipc_error_t nipc_server_init_cgroups_lookup(
     nipc_uds_server_config_t typed_cfg = service_server_config_to_transport(config);
     if (typed_cfg.max_request_payload_bytes == 0)
         typed_cfg.max_request_payload_bytes =
-            nipc_service_common_cgroups_response_payload_default();
+            nipc_service_common_lookup_request_payload_default();
     if (typed_cfg.max_response_payload_bytes == 0)
         typed_cfg.max_response_payload_bytes =
             nipc_service_common_cgroups_response_payload_default();
@@ -1371,7 +1373,7 @@ nipc_error_t nipc_server_init_apps_lookup(
     nipc_uds_server_config_t typed_cfg = service_server_config_to_transport(config);
     if (typed_cfg.max_request_payload_bytes == 0)
         typed_cfg.max_request_payload_bytes =
-            nipc_service_common_cgroups_response_payload_default();
+            nipc_service_common_lookup_request_payload_default();
     if (typed_cfg.max_response_payload_bytes == 0)
         typed_cfg.max_response_payload_bytes =
             nipc_service_common_cgroups_response_payload_default();

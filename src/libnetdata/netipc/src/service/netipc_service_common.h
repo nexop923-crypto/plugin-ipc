@@ -29,6 +29,8 @@ bool nipc_service_common_header_payload_len_u32(uint32_t payload_len,
 bool nipc_service_common_mul_would_overflow(size_t count, size_t size);
 uint32_t nipc_service_common_cgroups_request_payload_default(void);
 uint32_t nipc_service_common_cgroups_response_payload_default(void);
+uint32_t nipc_service_common_lookup_request_payload_default(void);
+uint32_t nipc_service_common_typed_response_batch_items(uint32_t max_request_batch_items);
 
 void nipc_service_common_client_init(nipc_client_ctx_t *ctx,
                                      const char *run_dir,

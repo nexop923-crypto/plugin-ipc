@@ -12,7 +12,7 @@ func clientConfigToTransport(config ClientConfig) posix.ClientConfig {
 		PreferredProfiles:       config.PreferredProfiles,
 		MaxRequestBatchItems:    config.MaxRequestBatchItems,
 		MaxResponsePayloadBytes: config.MaxResponsePayloadBytes,
-		MaxResponseBatchItems:   config.MaxRequestBatchItems,
+		MaxResponseBatchItems:   typedResponseBatchItems(config.MaxRequestBatchItems),
 		AuthToken:               config.AuthToken,
 	}
 }
@@ -23,7 +23,7 @@ func serverConfigToTransport(config ServerConfig) posix.ServerConfig {
 		PreferredProfiles:       config.PreferredProfiles,
 		MaxRequestBatchItems:    config.MaxRequestBatchItems,
 		MaxResponsePayloadBytes: config.MaxResponsePayloadBytes,
-		MaxResponseBatchItems:   config.MaxRequestBatchItems,
+		MaxResponseBatchItems:   typedResponseBatchItems(config.MaxRequestBatchItems),
 		AuthToken:               config.AuthToken,
 	}
 }

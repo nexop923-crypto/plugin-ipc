@@ -827,6 +827,36 @@ Implementation validation:
   - Windows/MSYS CTest service slice passed: `test_win_service`, `test_win_service_extra`, and `test_win_service_payload_limits`.
   - `git diff --check` passed.
   - `bash .agents/sow/audit.sh` passed.
+
+### 2026-06-04 GitHub AI Quality Findings Review
+
+- The GitHub quality AI findings page reported seven findings across typed Go service wrappers and C Windows service code.
+- Response-batch mapping findings:
+  - Reported files include `src/go/pkg/netipc/service/apps_lookup/client.go`, `src/go/pkg/netipc/service/cgroups/client.go`, `src/go/pkg/netipc/service/cgroups_lookup/client.go`, `src/go/pkg/netipc/service/cgroups_lookup/client_windows.go`, and `src/libnetdata/netipc/src/service/netipc_service_win.c`.
+  - Same-failure search also found the equivalent Go Windows apps lookup wrapper and POSIX C service mapping.
+  - Decision: reject these as false positives, but clarify the code.
+  - Evidence: public typed Go configs expose `MaxRequestBatchItems` and `MaxResponsePayloadBytes`, but no `MaxResponseBatchItems`; C `nipc_client_config_t` and `nipc_server_config_t` likewise expose only `max_request_batch_items` and `max_response_payload_bytes`.
+  - Evidence: `docs/level1-wire-envelope.md` says `max_response_batch_items` is kept for wire symmetry and the agreed response batch count must equal the agreed request batch count.
+  - Implementation plan: keep behavior unchanged, but route response-batch assignments through private helpers named as typed response-batch symmetry helpers so future reviewers do not interpret the mapping as accidental copy-paste.
+- Lookup request-payload default finding:
+  - Reported file: `src/libnetdata/netipc/src/service/netipc_service_win.c`.
+  - Same-failure search found the equivalent POSIX C lookup server initializers.
+  - Decision: reject as intentional behavior, but clarify the code.
+  - Evidence: `docs/level2-typed-api.md` says typed callers do not provide `max_request_payload_bytes`; the library derives the initial proposal internally from method schema, batch size, and dynamic-field assumptions.
+  - Evidence: lookup requests contain dynamic path/PID arrays, and C lookup servers pre-size accepted-session SHM resources from `learned_request_payload_bytes` before serving typed requests.
+  - Risk of applying the suggested change: changing lookup server request defaults from the larger lookup default to the generic request default could add avoidable reconnect churn or undersized SHM setup for lookup workloads.
+  - Implementation plan: keep behavior unchanged, but replace direct `cgroups_response_payload_default()` calls in lookup request-default sites with a private helper named as a lookup request-payload default.
+  - Implemented:
+    - C POSIX and Windows typed service config conversion now routes response-batch symmetry through `nipc_service_common_typed_response_batch_items()`.
+    - C POSIX and Windows lookup server request defaults now route through `nipc_service_common_lookup_request_payload_default()`.
+    - Go POSIX and Windows typed service wrappers for apps lookup, cgroups lookup, and cgroups snapshot now route response-batch symmetry through per-package `typedResponseBatchItems()` helpers.
+  - Same-failure verification: no remaining direct `MaxResponseBatchItems: config.MaxRequestBatchItems` or `max_response_batch_items = config->max_request_batch_items` assignments in typed service wrappers.
+  - `cmake --build build` passed.
+  - `/usr/bin/ctest --test-dir build --output-on-failure -R 'service|cache'` passed: 13/13 focused service/cache tests.
+  - POSIX Go typed-service package tests passed for apps lookup, cgroups lookup, and cgroups snapshot.
+  - Windows Go typed-service package compilation/tests passed for apps lookup, cgroups lookup, and cgroups snapshot.
+  - Windows/MSYS rebuild passed for `netipc_service_win`, `test_win_service`, `test_win_service_extra`, `test_win_service_payload_limits`, `interop_service_win_c`, and `interop_cache_win_c`.
+  - Windows/MSYS CTest service slice passed: `test_win_service`, `test_win_service_extra`, and `test_win_service_payload_limits`.
   - `codacy-analysis analyze --output-format json` passed:
     - Checkov: 0 issues.
     - Opengrep/Semgrep: 0 issues.
@@ -834,10 +864,10 @@ Implementation validation:
     - cppcheck: 0 issues.
     - ShellCheck: 0 issues.
     - Spectral: 0 issues.
-    - total: 0 issues, 0 errors.
+  - total: 0 issues, 0 errors.
   - `bash .agents/sow/audit.sh` passed and reported SOW initialization complete and clean.
   - `git diff --check` passed.
-  - Sensitive-data scan across the touched SOW, C service, C service common, C codec, and CMake files returned no matches.
+  - Sensitive-data scan across the touched SOW, Go service wrappers, and C service files returned no matches.
 
 Sensitive data gate:
 
