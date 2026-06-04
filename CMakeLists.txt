@@ -67,6 +67,7 @@ if(NOT NETIPC_WINDOWS_RUNTIME)
         # --- C library: L2 service orchestration (Linux only, needs SHM+UDS) ----
 
         add_library(netipc_service STATIC
+            src/libnetdata/netipc/src/service/netipc_service_common.c
             src/libnetdata/netipc/src/service/netipc_service.c
         )
         target_include_directories(netipc_service PUBLIC
@@ -102,6 +103,7 @@ if(NETIPC_WINDOWS_RUNTIME)
     # --- C library: L2/L3 Windows service orchestration ----------------------
 
     add_library(netipc_service_win STATIC
+        src/libnetdata/netipc/src/service/netipc_service_common.c
         src/libnetdata/netipc/src/service/netipc_service_win.c
     )
     target_include_directories(netipc_service_win PUBLIC

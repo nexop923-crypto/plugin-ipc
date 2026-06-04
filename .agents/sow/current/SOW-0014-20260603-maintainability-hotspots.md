@@ -227,6 +227,149 @@ Decision update on 2026-06-04:
 - Implementation scope is limited to `src/go/pkg/netipc/service/raw/cache.go`, `src/go/pkg/netipc/service/raw/cache_windows.go`, and a shared raw-cache helper file if needed.
 - Public `NewCache()` signatures and platform build tags must remain unchanged.
 
+Decision update on 2026-06-04, C lookup codec target:
+
+- The user confirmed that `src/libnetdata/netipc/src/protocol/netipc_protocol.c` file complexity and POSIX/Windows service duplication are real hygiene issues worth improving when the change stays reasonable.
+- Continue in this existing SOW instead of opening a new SOW.
+- First target: reduce `netipc_protocol.c` lookup response builder complexity by extracting private C codec helpers around item layout, label layout, string writing, and directory entry writing.
+- Preserve the public C protocol API, public header declarations, wire format, offsets, alignment, error codes, and cross-language fixture bytes.
+- Defer POSIX/Windows service common extraction to a separate target-specific decision because it has higher lifecycle and platform-risk surface.
+
+### Target Gate - C Lookup Codec Builder Cleanup
+
+Problem / root-cause model:
+
+- `netipc_protocol.c` is a high-complexity file because it contains multiple protocol families and two dense lookup response builders.
+- The remaining builder complexity is concentrated in repeated fixed-string offset calculation, label table sizing, bounds checks, wire header writes, string writes, label writes, and directory updates.
+- Working theory: helper extraction can improve reviewability and reduce function-level complexity without changing the wire contract.
+
+Evidence reviewed:
+
+- `src/libnetdata/netipc/src/protocol/netipc_protocol.c:1721` `nipc_cgroups_lookup_builder_add`.
+- `src/libnetdata/netipc/src/protocol/netipc_protocol.c:2063` `nipc_apps_lookup_builder_add`.
+- `src/libnetdata/netipc/src/protocol/netipc_protocol.c:1006` shared label storage sizing helper.
+- `src/libnetdata/netipc/src/protocol/netipc_protocol.c:1186` shared label writer.
+- `docs/code-organization.md` codec boundary: protocol code owns wire format encode/decode/builders and must not import transport/service logic.
+- `tests/interop_codec.sh` cross-language byte-identity and decode validation covers cgroups/apps lookup response fixtures.
+
+Affected contracts and surfaces:
+
+- C codec internals only.
+- Public C protocol header and function signatures remain unchanged.
+- Cross-language C/Rust/Go fixture byte identity is an acceptance requirement.
+
+Existing patterns to reuse:
+
+- Keep private static helpers in `netipc_protocol.c`.
+- Keep error returns as `NIPC_ERR_*`.
+- Keep existing `lookup_write_labels`, `lookup_finish_common`, `align8_u64_over_limit`, and `add_u64_over_limit` helper style.
+
+Risk and blast radius:
+
+- Medium. The code owns wire layout, offsets, alignment, label table placement, and builder error behavior.
+- Main regression risks are off-by-one NUL placement, wrong directory length, wrong relative offsets after finish, or changed overflow/error classification.
+
+Sensitive data handling plan:
+
+- Do not read `.env`.
+- Do not write secrets, credentials, tokens, customer data, personal data, private endpoints, or proprietary details into code, docs, skills, specs, or SOW artifacts.
+
+Implementation plan:
+
+1. Extract a private layout struct for lookup builder item placement.
+2. Extract shared fixed-string layout calculation for cgroups and apps builders.
+3. Extract shared label layout calculation using existing label validation and sizing rules.
+4. Extract shared directory-entry write and fixed-string write helpers.
+5. Keep cgroups/apps-specific wire header construction local and explicit.
+
+Validation plan:
+
+- Build C code with `cmake --build build`.
+- Run focused protocol tests with `/usr/bin/ctest --test-dir build --output-on-failure -R protocol`.
+- Run `bash tests/interop_codec.sh` serially after the build/protocol test.
+- Run `codacy-analysis analyze --output-format json`.
+- Run `git diff --check`, SOW audit, and sensitive-data scan on touched files.
+
+Artifact impact plan:
+
+- `AGENTS.md`: no workflow or guardrail change expected.
+- Runtime project skills: no reusable workflow change expected.
+- Specs: no public protocol or API behavior change expected; update only if validation reveals a contract discrepancy.
+- End-user/operator docs: no public usage change expected.
+- End-user/operator skills: no exported/operator workflow change expected.
+- SOW lifecycle: record this target and keep SOW in progress after the narrow cleanup unless the user asks to close it.
+
+Decision update on 2026-06-04, C service common target:
+
+- The user approved continuing in this SOW after the C lookup codec cleanup.
+- Proceed with the POSIX/Windows C service duplication cleanup next.
+- Target a private service-common module for platform-neutral L2/L3 logic; do not merge the POSIX and Windows session loops.
+- Preserve platform-specific transport, SHM, wait, cancel, close, wakeup, and thread behavior.
+
+### Target Gate - C Service Common Extraction
+
+Problem / root-cause model:
+
+- `src/libnetdata/netipc/src/service/netipc_service.c` and `src/libnetdata/netipc/src/service/netipc_service_win.c` duplicate substantial service orchestration code.
+- Some duplication is intentional because POSIX and Windows transports differ in polling, wakeup, cancellation, SHM object preparation, and thread lifecycle.
+- Working theory: extracting platform-neutral service helpers can reduce real duplication while keeping the critical platform paths readable and explicit.
+
+Evidence reviewed:
+
+- `src/libnetdata/netipc/src/service/netipc_service.c:144` and `src/libnetdata/netipc/src/service/netipc_service_win.c:141` duplicate power-of-two sizing helpers.
+- `src/libnetdata/netipc/src/service/netipc_service.c:157` and `src/libnetdata/netipc/src/service/netipc_service_win.c:154` duplicate buffer sizing helpers.
+- `src/libnetdata/netipc/src/service/netipc_service.c:587` and `src/libnetdata/netipc/src/service/netipc_service_win.c:578` duplicate call retry state-machine structure but differ in sleep/drain timing.
+- `src/libnetdata/netipc/src/service/netipc_service.c:703` and `src/libnetdata/netipc/src/service/netipc_service_win.c:693` duplicate lookup request-size helpers.
+- `src/libnetdata/netipc/src/service/netipc_service.c:1039` and `src/libnetdata/netipc/src/service/netipc_service_win.c:1231` duplicate typed dispatch.
+- `src/libnetdata/netipc/src/service/netipc_service.c:1876` and `src/libnetdata/netipc/src/service/netipc_service_win.c:1871` duplicate L3 cgroups cache logic with only allocator fault-site and monotonic-clock differences.
+- `docs/code-organization.md` confirms service modules own Level 2 retry/managed server orchestration and Level 3 cache helpers, while transport mechanics remain below the service layer.
+
+Affected contracts and surfaces:
+
+- C private service implementation and CMake build inputs.
+- Public C service API signatures remain unchanged.
+- POSIX and Windows behavior must remain platform-specific where the transport lifecycle differs.
+
+Existing patterns to reuse:
+
+- Keep platform files as the owner of transport calls and OS primitives.
+- Keep common code private under `src/libnetdata/netipc/src/service/`.
+- Keep fault-injection sites preserved through platform-provided allocator callbacks for shared cache code.
+
+Risk and blast radius:
+
+- Medium. Service code owns connection retry, typed calls, managed server dispatch, and cache refresh behavior.
+- Main regression risks are changed reconnect timing, changed error mapping, changed response overflow handling, lost fault-injection coverage, or Windows/POSIX lifecycle drift.
+
+Sensitive data handling plan:
+
+- Do not read `.env`.
+- Do not write secrets, credentials, tokens, customer data, personal data, private endpoints, or proprietary details into code, docs, skills, specs, or SOW artifacts.
+
+Implementation plan:
+
+1. Add private `netipc_service_common.h/.c`.
+2. Move platform-neutral sizing, default payload, request-size, response-status, typed-dispatch, client status/close-buffer, and L3 cache helpers into the common module.
+3. Keep platform files responsible for fault injection wrappers, transport config conversion, connection attempts, send/receive, session loops, accept loops, and OS-specific shutdown.
+4. Link the common source into both POSIX and Windows service libraries.
+
+Validation plan:
+
+- Build C code with `cmake --build build`.
+- Run focused C service tests with `/usr/bin/ctest --test-dir build --output-on-failure -R 'service|cache'`.
+- Run POSIX interop scripts affected by service/cache: `bash tests/test_service_interop.sh`, `bash tests/test_service_shm_interop.sh`, `bash tests/test_cache_interop.sh`, and `bash tests/test_cache_shm_interop.sh` when available on the local platform.
+- Run `codacy-analysis analyze --output-format json`.
+- Run `git diff --check`, SOW audit, and sensitive-data scan on touched files.
+
+Artifact impact plan:
+
+- `AGENTS.md`: no workflow or guardrail change expected.
+- Runtime project skills: no reusable workflow change expected.
+- Specs: no public protocol/API behavior change expected; update only if validation reveals a contract discrepancy.
+- End-user/operator docs: no public usage change expected.
+- End-user/operator skills: no exported/operator workflow change expected.
+- SOW lifecycle: record this target and keep SOW in progress unless the user asks to close it.
+
 2. Duplication composition refinement
 
 Context:
@@ -373,6 +516,25 @@ Refined recommendation:
   - `src/crates/netipc/src/protocol/lookup.rs`
 - The apps lookup semantic validation split preserves the existing order: status domain, cgroup-status domain, comm length, unknown-pid zero-field checks, then known-pid cgroup-state checks.
 - The apps lookup semantic validation split intentionally did not change decode offsets, builder layout, label table storage, directory entries, response finishing, serialization, or public APIs.
+- Continued with the approved C service common target.
+- Added private common service implementation files:
+  - `src/libnetdata/netipc/src/service/netipc_service_common.c`
+  - `src/libnetdata/netipc/src/service/netipc_service_common.h`
+- Linked the common source into both C service libraries in `CMakeLists.txt`.
+- Moved platform-neutral C service helpers into the common module:
+  - payload-size and power-of-two growth helpers.
+  - default cgroups request/response payload sizes.
+  - common client initialization, status, and buffer cleanup.
+  - request-size calculations for cgroups lookup and apps lookup.
+  - response transport-status mapping.
+  - typed server dispatch and response header/result handling.
+  - L3 cgroups cache refresh, lookup, status, and close logic.
+- Kept platform files responsible for OS-specific behavior:
+  - POSIX and Windows transport config conversion.
+  - connection setup, reconnect timing, send/receive calls, and SHM attachment.
+  - server session loops, accept loops, drain/stop/destroy lifecycle, wakeups, cancellation, and thread handling.
+- Preserved platform-specific cache allocation fault sites through callback tables in `netipc_service.c` and `netipc_service_win.c`.
+- Did not merge POSIX and Windows session loops because they still encode different lifecycle, wait, wakeup, and cancellation behavior.
 
 ## Validation
 
@@ -577,6 +739,86 @@ Implementation validation:
   - `bash .agents/sow/audit.sh` passed and reported SOW initialization complete and clean.
   - `git diff --check` passed.
   - Sensitive-data scan across the touched SOW and codec files returned no matches.
+- C lookup codec builder validation:
+  - `cmake --build build` passed.
+  - `/usr/bin/ctest --test-dir build --output-on-failure -R protocol` passed: 4/4 protocol tests.
+  - `bash tests/interop_codec.sh` passed after the build/protocol test, serially:
+    - Rust decoded C output: 89 passed, 0 failed.
+    - Go decoded C output: 90 passed, 0 failed.
+    - C decoded Rust output: 101 passed, 0 failed.
+    - Go decoded Rust output: 90 passed, 0 failed.
+    - C decoded Go output: 101 passed, 0 failed.
+    - Rust decoded Go output: 89 passed, 0 failed.
+    - C, Rust, and Go generated byte-identical protocol fixture files, including all cgroups/apps lookup response variants.
+  - Codacy-managed Lizard with `-l c -C 20 src/libnetdata/netipc/src/protocol/netipc_protocol.c` passed with no CCN threshold warnings:
+    - `nipc_cgroups_lookup_builder_add`: CCN 8.
+    - `nipc_apps_lookup_builder_add`: CCN 8.
+    - No function exceeded CCN 20.
+    - Note: this improves function-level complexity and reviewability, but same-file helper extraction only modestly reduces file-level summed complexity. Further per-file Codacy score reduction requires a separate protocol-family file split decision.
+  - `codacy-analysis analyze --output-format json` passed:
+    - Checkov: 0 issues.
+    - Opengrep/Semgrep: 0 issues.
+    - Trivy: 0 issues.
+    - cppcheck: 0 issues.
+    - ShellCheck: 0 issues.
+    - Spectral: 0 issues.
+    - total: 0 issues, 0 errors.
+  - `bash .agents/sow/audit.sh` passed and reported SOW initialization complete and clean.
+  - `git diff --check` passed.
+  - Sensitive-data scan across the touched SOW and C codec file returned no matches.
+- C service common extraction validation:
+  - `cmake --build build` passed.
+  - `/usr/bin/ctest --test-dir build --output-on-failure -R 'service|cache'` passed: 13/13 focused service/cache tests.
+  - `bash tests/test_service_interop.sh` passed: 9/9 C/Rust/Go service interop pairs.
+  - `bash tests/test_cache_interop.sh` passed: 9/9 C/Rust/Go cache interop pairs.
+  - `bash tests/test_service_shm_interop.sh` passed: 9/9 C/Rust/Go SHM service interop pairs.
+  - `bash tests/test_cache_shm_interop.sh` passed: 9/9 C/Rust/Go SHM cache interop pairs.
+  - Codacy-managed Lizard with `-l c -C 20 src/libnetdata/netipc/src/service/netipc_service.c src/libnetdata/netipc/src/service/netipc_service_win.c src/libnetdata/netipc/src/service/netipc_service_common.c` reported:
+    - `netipc_service.c`: NLOC 1290, 53 functions.
+    - `netipc_service_win.c`: NLOC 1315, 53 functions.
+    - `netipc_service_common.c`: NLOC 503, 30 functions.
+    - Remaining CCN warnings are only the platform-specific session loops:
+      - POSIX `server_handle_session`: CCN 32.
+      - Windows `server_handle_session`: CCN 33.
+    - This confirms the common extraction reduced duplicated helper/cache code while leaving the higher-risk lifecycle loops explicit.
+  - `npx --yes jscpd --min-lines 5 --min-tokens 50 --max-size 2mb --format c,cpp,rust,go --reporters json --output /tmp/plugin-ipc-jscpd-current src` produced a filtered production-source approximation:
+    - 36 production clone pairs after excluding Go/Rust tests and `src/crates/netipc/src/bin/**`.
+    - 715 production clone-pair lines.
+    - zero remaining clone pairs involving `src/libnetdata/netipc/src/service/netipc_service.c`, `src/libnetdata/netipc/src/service/netipc_service_win.c`, or `src/libnetdata/netipc/src/service/netipc_service_common.c`.
+    - largest remaining production duplicate surfaces are Rust typed facades and SHM transport internals, not the C POSIX/Windows service files targeted here.
+  - Windows/MSYS validation on remote host `win11`:
+    - The current uncommitted tree was copied to a fresh remote validation directory with `.git/`, build outputs, `.env`, and unrelated local scratch files excluded.
+    - Environment: `MSYSTEM=MSYS`, `/usr/bin/gcc`, `/usr/bin/g++`, `/usr/bin/cmake`, `/usr/bin/ninja`, Windows Cargo from the Windows user-profile Cargo directory, and Go from `/c/Program Files/Go/bin`.
+    - Targeted Windows/MSYS build passed for named-pipe, WinSHM, service, cache, stress, and C/Rust/Go interop targets; this compiled `netipc_service_common.c` and `netipc_service_win.c` into `libnetipc_service_win.a`.
+    - Targeted Windows/MSYS CTest slice passed: 12/12 tests:
+      - `test_named_pipe`
+      - `test_named_pipe_interop`
+      - `test_win_shm`
+      - `test_win_service`
+      - `test_win_service_extra`
+      - `test_win_service_payload_limits`
+      - `test_win_stress`
+      - `test_win_shm_interop`
+      - `test_service_win_interop`
+      - `test_service_win_shm_interop`
+      - `test_cache_win_interop`
+      - `test_cache_win_shm_interop`
+    - Full Windows/MSYS `cmake --build build-msys-validation -j12` passed.
+    - Full Windows/MSYS `ctest` initially reported 32/34 passing. The two failures were investigated:
+      - `interop_codec` failed because the first remote copy included a stale local Linux Rust `src/crates/netipc/target/debug/interop_codec` artifact; after deleting the remote temp Cargo target directory, `ctest -R '^interop_codec$'` passed.
+      - `go_FuzzDecodeCgroupsLookupResponse` failed once with `context deadline exceeded` after the 20-second fuzz deadline; immediate rerun with `ctest -R '^go_FuzzDecodeCgroupsLookupResponse$'` passed.
+    - Windows/MSYS service/cache tests and cross-language interop are therefore validated for this change. The dirty-transfer artifact is not a repository failure; the single fuzz timeout is recorded as a timing flake in the full Windows smoke suite.
+  - `codacy-analysis analyze --output-format json` passed:
+    - Checkov: 0 issues.
+    - Opengrep/Semgrep: 0 issues.
+    - Trivy: 0 issues.
+    - cppcheck: 0 issues.
+    - ShellCheck: 0 issues.
+    - Spectral: 0 issues.
+    - total: 0 issues, 0 errors.
+  - `bash .agents/sow/audit.sh` passed and reported SOW initialization complete and clean.
+  - `git diff --check` passed.
+  - Sensitive-data scan across the touched SOW, C service, C service common, C codec, and CMake files returned no matches.
 
 Sensitive data gate:
 
@@ -586,7 +828,7 @@ Sensitive data gate:
 
 ## Outcome
 
-Raw cache, Go typed-facade, apps lookup builder, cgroups lookup builder, apps lookup semantic validation, and the five Go code-scanning findings are locally remediated; the overall maintainability SOW remains in progress pending CI confirmation and Codacy metric re-check.
+Raw cache, Go typed-facade, apps lookup builder, cgroups lookup builder, apps lookup semantic validation, five Go code-scanning findings, C lookup builder function-level complexity, and C POSIX/Windows service helper duplication are locally remediated; the overall maintainability SOW remains in progress pending the next selected maintainability target and Codacy metric re-check after push.
 
 ## Lessons Extracted
 
@@ -595,7 +837,7 @@ Pending.
 ## Followup
 
 - Continue only with complexity or duplication targets that have clear maintainability gain and low enough behavior risk.
-- Current remaining high-complexity targets include apps lookup builder label writing, service session loops, and transport send/receive paths; service loops and transport paths have higher behavioral and performance risk.
+- Current remaining high-complexity targets include the POSIX/Windows service session loops and transport send/receive/reconnect paths; these have higher behavioral and performance risk than the helper/cache extraction completed here.
 
 ## Regression Log
 

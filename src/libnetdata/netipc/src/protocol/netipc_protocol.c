@@ -1208,6 +1208,147 @@ static void lookup_write_labels(uint8_t *item,
     }
 }
 
+typedef struct {
+    const char *ptr;
+    uint32_t len;
+    bool require_non_empty;
+    uint64_t offset;
+} lookup_builder_string_t;
+
+typedef struct {
+    uint64_t item_start;
+    uint64_t fixed_end;
+    uint64_t table_start;
+    uint64_t table_bytes;
+    uint64_t item_size;
+} lookup_builder_item_layout_t;
+
+static nipc_error_t lookup_builder_validate_strings(
+    const lookup_builder_string_t *strings,
+    uint32_t string_count)
+{
+    for (uint32_t i = 0; i < string_count; i++) {
+        if (source_string_invalid(strings[i].ptr, strings[i].len,
+                                  strings[i].require_non_empty))
+            return NIPC_ERR_BAD_LAYOUT;
+    }
+    return NIPC_OK;
+}
+
+static nipc_error_t lookup_builder_layout_strings(
+    uint32_t fixed_header_size,
+    lookup_builder_string_t *strings,
+    uint32_t string_count,
+    uint64_t *fixed_end_out)
+{
+    uint64_t cursor = fixed_header_size;
+
+    for (uint32_t i = 0; i < string_count; i++) {
+        strings[i].offset = cursor;
+        if (add_u64_over_limit(cursor, strings[i].len, UINT32_MAX, &cursor) ||
+            add_u64_over_limit(cursor, 1u, UINT32_MAX, &cursor))
+            return NIPC_ERR_OVERFLOW;
+    }
+
+    *fixed_end_out = cursor;
+    return NIPC_OK;
+}
+
+static nipc_error_t lookup_builder_layout_labels(
+    uint64_t fixed_end,
+    const nipc_lookup_label_view_t *labels,
+    uint16_t label_count,
+    lookup_builder_item_layout_t *layout)
+{
+    layout->table_start = fixed_end;
+    layout->table_bytes = 0;
+    layout->item_size = fixed_end;
+
+    if (label_count == 0)
+        return NIPC_OK;
+
+    if (!labels)
+        return NIPC_ERR_OVERFLOW;
+
+    if (align8_u64_over_limit(fixed_end, UINT32_MAX, &layout->table_start))
+        return NIPC_ERR_OVERFLOW;
+
+    layout->table_bytes = (uint64_t)label_count * NIPC_LOOKUP_LABEL_ENTRY_SIZE;
+    if (add_u64_over_limit(layout->table_start, layout->table_bytes,
+                           UINT32_MAX, &layout->item_size))
+        return NIPC_ERR_OVERFLOW;
+
+    for (uint32_t i = 0; i < label_count; i++) {
+        if (source_string_invalid(labels[i].key.ptr, labels[i].key.len, true) ||
+            source_string_invalid(labels[i].value.ptr, labels[i].value.len, false))
+            return NIPC_ERR_BAD_LAYOUT;
+
+        if (!lookup_label_storage_add_u64(&layout->item_size, &labels[i]))
+            return NIPC_ERR_OVERFLOW;
+    }
+
+    return NIPC_OK;
+}
+
+static nipc_error_t lookup_builder_layout_item(
+    size_t data_offset,
+    size_t buf_len,
+    uint32_t fixed_header_size,
+    lookup_builder_string_t *strings,
+    uint32_t string_count,
+    const nipc_lookup_label_view_t *labels,
+    uint16_t label_count,
+    lookup_builder_item_layout_t *layout)
+{
+    if (align8_u64_over_limit((uint64_t)data_offset, UINT32_MAX,
+                              &layout->item_start))
+        return NIPC_ERR_OVERFLOW;
+
+    nipc_error_t err = lookup_builder_layout_strings(
+        fixed_header_size, strings, string_count, &layout->fixed_end);
+    if (err != NIPC_OK)
+        return err;
+
+    err = lookup_builder_layout_labels(layout->fixed_end, labels, label_count,
+                                       layout);
+    if (err != NIPC_OK)
+        return err;
+
+    uint64_t buf_len_u64 = (uint64_t)buf_len;
+    if (layout->item_size > buf_len_u64 ||
+        layout->item_start > buf_len_u64 - layout->item_size)
+        return NIPC_ERR_OVERFLOW;
+
+    return NIPC_OK;
+}
+
+static void lookup_builder_write_strings(uint8_t *item,
+                                         const lookup_builder_string_t *strings,
+                                         uint32_t string_count)
+{
+    for (uint32_t i = 0; i < string_count; i++) {
+        size_t offset = (size_t)strings[i].offset;
+        if (strings[i].len > 0)
+            memcpy(item + offset, strings[i].ptr, strings[i].len);
+        item[offset + strings[i].len] = '\0';
+    }
+}
+
+static void lookup_builder_write_dir_entry(uint8_t *buf,
+                                           size_t response_header_size,
+                                           uint32_t item_count,
+                                           size_t item_start,
+                                           size_t item_size)
+{
+    nipc_lookup_dir_entry_t dir_entry = {
+        .offset = (uint32_t)item_start,
+        .length = (uint32_t)item_size,
+    };
+    size_t dir_pos = response_header_size +
+                     (size_t)item_count * NIPC_LOOKUP_DIR_ENTRY_SIZE;
+    memcpy(buf + dir_pos, &dir_entry, sizeof(dir_entry));
+}
+
 static size_t lookup_finish_common(uint8_t *p,
                                    size_t buf_len,
                                    uint32_t item_count,
@@ -1740,74 +1881,29 @@ nipc_error_t nipc_cgroups_lookup_builder_add(
         b->error = err;
         return b->error;
     }
-    if (source_string_invalid(path, path_len, true) ||
-        source_string_invalid(name, name_len, false)) {
-        b->error = NIPC_ERR_BAD_LAYOUT;
+
+    lookup_builder_string_t strings[] = {
+        { .ptr = path, .len = path_len, .require_non_empty = true },
+        { .ptr = name, .len = name_len, .require_non_empty = false },
+    };
+    err = lookup_builder_validate_strings(strings, 2);
+    if (err != NIPC_OK) {
+        b->error = err;
         return b->error;
     }
 
-    uint64_t item_start_u64;
-    if (align8_u64_over_limit((uint64_t)b->data_offset, UINT32_MAX, &item_start_u64)) {
-        b->error = NIPC_ERR_OVERFLOW;
+    lookup_builder_item_layout_t layout = {0};
+    err = lookup_builder_layout_item(b->data_offset, b->buf_len,
+                                     NIPC_CGROUPS_LOOKUP_ITEM_HDR_SIZE,
+                                     strings, 2, labels, label_count,
+                                     &layout);
+    if (err != NIPC_OK) {
+        b->error = err;
         return b->error;
     }
 
-    uint64_t path_offset_u64 = NIPC_CGROUPS_LOOKUP_ITEM_HDR_SIZE;
-    uint64_t name_offset_u64;
-    uint64_t fixed_end_u64;
-    if (add_u64_over_limit(path_offset_u64, path_len, UINT32_MAX, &name_offset_u64) ||
-        add_u64_over_limit(name_offset_u64, 1u, UINT32_MAX, &name_offset_u64) ||
-        add_u64_over_limit(name_offset_u64, name_len, UINT32_MAX, &fixed_end_u64) ||
-        add_u64_over_limit(fixed_end_u64, 1u, UINT32_MAX, &fixed_end_u64)) {
-        b->error = NIPC_ERR_OVERFLOW;
-        return b->error;
-    }
-
-    uint64_t item_size_u64 = fixed_end_u64;
-    uint64_t table_start_u64 = fixed_end_u64;
-    uint64_t table_bytes_u64 = 0;
-    if (label_count > 0) {
-        if (!labels) {
-            b->error = NIPC_ERR_OVERFLOW;
-            return b->error;
-        }
-        if (align8_u64_over_limit(fixed_end_u64, UINT32_MAX, &table_start_u64)) {
-            b->error = NIPC_ERR_OVERFLOW;
-            return b->error;
-        }
-        table_bytes_u64 = (uint64_t)label_count * NIPC_LOOKUP_LABEL_ENTRY_SIZE;
-        if (add_u64_over_limit(table_start_u64, table_bytes_u64, UINT32_MAX,
-                               &item_size_u64)) {
-            b->error = NIPC_ERR_OVERFLOW;
-            return b->error;
-        }
-        for (uint32_t i = 0; i < label_count; i++) {
-            if (source_string_invalid(labels[i].key.ptr, labels[i].key.len, true) ||
-                source_string_invalid(labels[i].value.ptr, labels[i].value.len, false)) {
-                b->error = NIPC_ERR_BAD_LAYOUT;
-                return b->error;
-            }
-            if (!lookup_label_storage_add_u64(&item_size_u64, &labels[i])) {
-                b->error = NIPC_ERR_OVERFLOW;
-                return b->error;
-            }
-        }
-    }
-
-    uint64_t buf_len_u64 = (uint64_t)b->buf_len;
-    if (item_size_u64 > buf_len_u64 ||
-        item_start_u64 > buf_len_u64 - item_size_u64) {
-        b->error = NIPC_ERR_OVERFLOW;
-        return b->error;
-    }
-
-    size_t item_start = (size_t)item_start_u64;
-    size_t path_offset = (size_t)path_offset_u64;
-    size_t name_offset = (size_t)name_offset_u64;
-    size_t fixed_end = (size_t)fixed_end_u64;
-    size_t item_size = (size_t)item_size_u64;
-    size_t table_start = (size_t)table_start_u64;
-    size_t table_bytes = (size_t)table_bytes_u64;
+    size_t item_start = (size_t)layout.item_start;
+    size_t item_size = (size_t)layout.item_size;
 
     if (item_start > b->data_offset)
         memset(b->buf + b->data_offset, 0, item_start - b->data_offset);
@@ -1818,33 +1914,27 @@ nipc_error_t nipc_cgroups_lookup_builder_add(
         .status = status,
         .orchestrator = orchestrator,
         .reserved0 = 0,
-        .path_offset = (uint32_t)path_offset,
+        .path_offset = (uint32_t)strings[0].offset,
         .path_length = path_len,
-        .name_offset = (uint32_t)name_offset,
+        .name_offset = (uint32_t)strings[1].offset,
         .name_length = name_len,
         .label_count = label_count,
         .reserved1 = 0,
     };
     memcpy(item, &wire, sizeof(wire));
-    memcpy(item + path_offset, path, path_len);
-    item[path_offset + path_len] = '\0';
-    if (name_len > 0)
-        memcpy(item + name_offset, name, name_len);
-    item[name_offset + name_len] = '\0';
+    lookup_builder_write_strings(item, strings, 2);
 
     if (label_count > 0) {
+        size_t fixed_end = (size_t)layout.fixed_end;
+        size_t table_start = (size_t)layout.table_start;
         if (table_start > fixed_end)
             memset(item + fixed_end, 0, table_start - fixed_end);
-        lookup_write_labels(item, table_start, table_bytes, labels, label_count);
+        lookup_write_labels(item, table_start, (size_t)layout.table_bytes,
+                            labels, label_count);
     }
 
-    nipc_lookup_dir_entry_t dir_entry = {
-        .offset = (uint32_t)item_start,
-        .length = (uint32_t)item_size,
-    };
-    size_t dir_pos = NIPC_CGROUPS_LOOKUP_RESP_HDR_SIZE +
-                     (size_t)b->item_count * NIPC_LOOKUP_DIR_ENTRY_SIZE;
-    memcpy(b->buf + dir_pos, &dir_entry, sizeof(dir_entry));
+    lookup_builder_write_dir_entry(b->buf, NIPC_CGROUPS_LOOKUP_RESP_HDR_SIZE,
+                                   b->item_count, item_start, item_size);
 
     b->data_offset = item_start + item_size;
     b->item_count++;
@@ -2084,81 +2174,30 @@ nipc_error_t nipc_apps_lookup_builder_add(
         comm_len, cgroup_path_len, cgroup_name_len, label_count);
     if (b->error != NIPC_OK)
         return b->error;
-    if (source_string_invalid(comm, comm_len, status == NIPC_PID_LOOKUP_KNOWN) ||
-        source_string_invalid(cgroup_path, cgroup_path_len, false) ||
-        source_string_invalid(cgroup_name, cgroup_name_len, false)) {
-        b->error = NIPC_ERR_BAD_LAYOUT;
+
+    lookup_builder_string_t strings[] = {
+        {
+            .ptr = comm,
+            .len = comm_len,
+            .require_non_empty = status == NIPC_PID_LOOKUP_KNOWN,
+        },
+        { .ptr = cgroup_path, .len = cgroup_path_len, .require_non_empty = false },
+        { .ptr = cgroup_name, .len = cgroup_name_len, .require_non_empty = false },
+    };
+    b->error = lookup_builder_validate_strings(strings, 3);
+    if (b->error != NIPC_OK)
         return b->error;
-    }
 
-    uint64_t item_start_u64;
-    if (align8_u64_over_limit((uint64_t)b->data_offset, UINT32_MAX, &item_start_u64)) {
-        b->error = NIPC_ERR_OVERFLOW;
+    lookup_builder_item_layout_t layout = {0};
+    b->error = lookup_builder_layout_item(b->data_offset, b->buf_len,
+                                          NIPC_APPS_LOOKUP_ITEM_HDR_SIZE,
+                                          strings, 3, labels, label_count,
+                                          &layout);
+    if (b->error != NIPC_OK)
         return b->error;
-    }
 
-    uint64_t comm_offset_u64 = NIPC_APPS_LOOKUP_ITEM_HDR_SIZE;
-    uint64_t path_offset_u64;
-    uint64_t name_offset_u64;
-    uint64_t fixed_end_u64;
-    if (add_u64_over_limit(comm_offset_u64, comm_len, UINT32_MAX, &path_offset_u64) ||
-        add_u64_over_limit(path_offset_u64, 1u, UINT32_MAX, &path_offset_u64) ||
-        add_u64_over_limit(path_offset_u64, cgroup_path_len, UINT32_MAX,
-                           &name_offset_u64) ||
-        add_u64_over_limit(name_offset_u64, 1u, UINT32_MAX, &name_offset_u64) ||
-        add_u64_over_limit(name_offset_u64, cgroup_name_len, UINT32_MAX,
-                           &fixed_end_u64) ||
-        add_u64_over_limit(fixed_end_u64, 1u, UINT32_MAX, &fixed_end_u64)) {
-        b->error = NIPC_ERR_OVERFLOW;
-        return b->error;
-    }
-
-    uint64_t item_size_u64 = fixed_end_u64;
-    uint64_t table_start_u64 = fixed_end_u64;
-    uint64_t table_bytes_u64 = 0;
-    if (label_count > 0) {
-        if (!labels) {
-            b->error = NIPC_ERR_OVERFLOW;
-            return b->error;
-        }
-        if (align8_u64_over_limit(fixed_end_u64, UINT32_MAX, &table_start_u64)) {
-            b->error = NIPC_ERR_OVERFLOW;
-            return b->error;
-        }
-        table_bytes_u64 = (uint64_t)label_count * NIPC_LOOKUP_LABEL_ENTRY_SIZE;
-        if (add_u64_over_limit(table_start_u64, table_bytes_u64, UINT32_MAX,
-                               &item_size_u64)) {
-            b->error = NIPC_ERR_OVERFLOW;
-            return b->error;
-        }
-        for (uint32_t i = 0; i < label_count; i++) {
-            if (source_string_invalid(labels[i].key.ptr, labels[i].key.len, true) ||
-                source_string_invalid(labels[i].value.ptr, labels[i].value.len, false)) {
-                b->error = NIPC_ERR_BAD_LAYOUT;
-                return b->error;
-            }
-            if (!lookup_label_storage_add_u64(&item_size_u64, &labels[i])) {
-                b->error = NIPC_ERR_OVERFLOW;
-                return b->error;
-            }
-        }
-    }
-
-    uint64_t buf_len_u64 = (uint64_t)b->buf_len;
-    if (item_size_u64 > buf_len_u64 ||
-        item_start_u64 > buf_len_u64 - item_size_u64) {
-        b->error = NIPC_ERR_OVERFLOW;
-        return b->error;
-    }
-
-    size_t item_start = (size_t)item_start_u64;
-    size_t comm_offset = (size_t)comm_offset_u64;
-    size_t path_offset = (size_t)path_offset_u64;
-    size_t name_offset = (size_t)name_offset_u64;
-    size_t fixed_end = (size_t)fixed_end_u64;
-    size_t item_size = (size_t)item_size_u64;
-    size_t table_start = (size_t)table_start_u64;
-    size_t table_bytes = (size_t)table_bytes_u64;
+    size_t item_start = (size_t)layout.item_start;
+    size_t item_size = (size_t)layout.item_size;
 
     if (item_start > b->data_offset)
         memset(b->buf + b->data_offset, 0, item_start - b->data_offset);
@@ -2174,39 +2213,29 @@ nipc_error_t nipc_apps_lookup_builder_add(
         .uid = uid,
         .reserved0 = 0,
         .starttime = starttime,
-        .comm_offset = (uint32_t)comm_offset,
+        .comm_offset = (uint32_t)strings[0].offset,
         .comm_length = comm_len,
-        .cgroup_path_offset = (uint32_t)path_offset,
+        .cgroup_path_offset = (uint32_t)strings[1].offset,
         .cgroup_path_length = cgroup_path_len,
-        .cgroup_name_offset = (uint32_t)name_offset,
+        .cgroup_name_offset = (uint32_t)strings[2].offset,
         .cgroup_name_length = cgroup_name_len,
         .label_count = label_count,
         .reserved1 = 0,
     };
     memcpy(item, &wire, NIPC_APPS_LOOKUP_ITEM_HDR_SIZE);
-    if (comm_len > 0)
-        memcpy(item + comm_offset, comm, comm_len);
-    item[comm_offset + comm_len] = '\0';
-    if (cgroup_path_len > 0)
-        memcpy(item + path_offset, cgroup_path, cgroup_path_len);
-    item[path_offset + cgroup_path_len] = '\0';
-    if (cgroup_name_len > 0)
-        memcpy(item + name_offset, cgroup_name, cgroup_name_len);
-    item[name_offset + cgroup_name_len] = '\0';
+    lookup_builder_write_strings(item, strings, 3);
 
     if (label_count > 0) {
+        size_t fixed_end = (size_t)layout.fixed_end;
+        size_t table_start = (size_t)layout.table_start;
         if (table_start > fixed_end)
             memset(item + fixed_end, 0, table_start - fixed_end);
-        lookup_write_labels(item, table_start, table_bytes, labels, label_count);
+        lookup_write_labels(item, table_start, (size_t)layout.table_bytes,
+                            labels, label_count);
     }
 
-    nipc_lookup_dir_entry_t dir_entry = {
-        .offset = (uint32_t)item_start,
-        .length = (uint32_t)item_size,
-    };
-    size_t dir_pos = NIPC_APPS_LOOKUP_RESP_HDR_SIZE +
-                     (size_t)b->item_count * NIPC_LOOKUP_DIR_ENTRY_SIZE;
-    memcpy(b->buf + dir_pos, &dir_entry, sizeof(dir_entry));
+    lookup_builder_write_dir_entry(b->buf, NIPC_APPS_LOOKUP_RESP_HDR_SIZE,
+                                   b->item_count, item_start, item_size);
 
     b->data_offset = item_start + item_size;
     b->item_count++;

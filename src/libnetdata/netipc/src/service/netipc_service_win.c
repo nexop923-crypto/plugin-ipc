@@ -15,6 +15,7 @@
 #include "netipc/netipc_protocol.h"
 #include "netipc/netipc_named_pipe.h"
 #include "netipc/netipc_win_shm.h"
+#include "netipc_service_common.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -24,7 +25,6 @@
 
 /* WaitForSingleObject timeout for server poll loops (ms) */
 #define SERVER_POLL_TIMEOUT_MS 100
-#define NIPC_CLIENT_BUF_DEFAULT 65536u
 #define CLIENT_SHM_ATTACH_RETRY_INTERVAL_MS 5u
 #define CLIENT_SHM_ATTACH_RETRY_TIMEOUT_MS 5000u
 #define CLIENT_CALL_RECONNECT_RETRY_INTERVAL_MS 5u
@@ -138,19 +138,6 @@ static uintptr_t service_beginthreadex(void *security,
 #endif
 }
 
-static uint32_t next_power_of_2_u32(uint32_t n)
-{
-    if (n < 16)
-        return 16;
-    n--;
-    n |= n >> 1;
-    n |= n >> 2;
-    n |= n >> 4;
-    n |= n >> 8;
-    n |= n >> 16;
-    return n + 1;
-}
-
 static bool ensure_buffer(uint8_t **buf, size_t *buf_size, size_t need, int fault_site)
 {
     if (*buf && *buf_size >= need)
@@ -165,53 +152,30 @@ static bool ensure_buffer(uint8_t **buf, size_t *buf_size, size_t need, int faul
     return true;
 }
 
-static bool header_payload_len(size_t payload_len, size_t *msg_len_out)
+static uint64_t monotonic_time_ms(void)
 {
-#if SIZE_MAX <= UINT32_MAX
-    if (payload_len > SIZE_MAX - NIPC_HEADER_LEN)
-        return false;
-#endif
-
-    *msg_len_out = NIPC_HEADER_LEN + payload_len;
-    return true;
+    return GetTickCount64();
 }
 
-static bool header_payload_len_u32(uint32_t payload_len, uint32_t *msg_len_out)
-{
-    if (payload_len > UINT32_MAX - NIPC_HEADER_LEN)
-        return false;
-
-    *msg_len_out = payload_len + NIPC_HEADER_LEN;
-    return true;
-}
-
-static bool service_mul_would_overflow(size_t count, size_t size)
-{
-    return size != 0 && count > SIZE_MAX / size;
-}
-
-static void client_note_request_capacity(nipc_client_ctx_t *ctx, uint32_t payload_len)
-{
-    uint32_t grown = next_power_of_2_u32(payload_len);
-    if (grown > NIPC_MAX_PAYLOAD_CAP)
-        grown = NIPC_MAX_PAYLOAD_CAP;
-    if (grown > ctx->transport_config.max_request_payload_bytes)
-        ctx->transport_config.max_request_payload_bytes = grown;
-}
-
-static void client_note_response_capacity(nipc_client_ctx_t *ctx, uint32_t payload_len)
-{
-    uint32_t grown = next_power_of_2_u32(payload_len);
-    if (grown > NIPC_MAX_PAYLOAD_CAP)
-        grown = NIPC_MAX_PAYLOAD_CAP;
-    if (grown > ctx->transport_config.max_response_payload_bytes)
-        ctx->transport_config.max_response_payload_bytes = grown;
-}
+static const nipc_service_common_cache_ops_t cgroups_cache_ops = {
+    .malloc_fn = service_malloc,
+    .calloc_fn = service_calloc,
+    .monotonic_ms_fn = monotonic_time_ms,
+    .cache_buckets_fault_site =
+        NIPC_WIN_SERVICE_TEST_FAULT_CACHE_BUCKETS_CALLOC_INTERNAL,
+    .cache_items_fault_site =
+        NIPC_WIN_SERVICE_TEST_FAULT_CACHE_ITEMS_CALLOC_INTERNAL,
+    .cache_item_name_fault_site =
+        NIPC_WIN_SERVICE_TEST_FAULT_CACHE_ITEM_NAME_MALLOC_INTERNAL,
+    .cache_item_path_fault_site =
+        NIPC_WIN_SERVICE_TEST_FAULT_CACHE_ITEM_PATH_MALLOC_INTERNAL,
+};
 
 static bool client_prepare_session_buffers(nipc_client_ctx_t *ctx)
 {
     size_t response_need;
-    if (!header_payload_len(ctx->session.max_response_payload_bytes, &response_need))
+    if (!nipc_service_common_header_payload_len(
+            ctx->session.max_response_payload_bytes, &response_need))
         return false;
     if (response_need < NIPC_HEADER_LEN + 1024u)
         response_need = NIPC_HEADER_LEN + 1024u;
@@ -223,7 +187,8 @@ static bool client_prepare_session_buffers(nipc_client_ctx_t *ctx)
     if (ctx->session.selected_profile == NIPC_WIN_SHM_PROFILE_HYBRID ||
         ctx->session.selected_profile == NIPC_WIN_SHM_PROFILE_BUSYWAIT) {
         size_t send_need;
-        if (!header_payload_len(ctx->session.max_request_payload_bytes, &send_need))
+        if (!nipc_service_common_header_payload_len(
+                ctx->session.max_request_payload_bytes, &send_need))
             return false;
         if (!ensure_buffer(&ctx->send_buf, &ctx->send_buf_size, send_need,
                            NIPC_WIN_SERVICE_TEST_FAULT_CLIENT_SEND_BUF_REALLOC_INTERNAL))
@@ -231,16 +196,6 @@ static bool client_prepare_session_buffers(nipc_client_ctx_t *ctx)
     }
 
     return true;
-}
-
-static uint32_t cgroups_request_payload_default(void)
-{
-    return NIPC_MAX_PAYLOAD_DEFAULT;
-}
-
-static uint32_t cgroups_response_payload_default(void)
-{
-    return NIPC_CLIENT_BUF_DEFAULT;
 }
 
 static nipc_np_client_config_t service_client_config_to_transport(
@@ -278,11 +233,6 @@ static nipc_np_server_config_t service_server_config_to_transport(
 
     return transport;
 }
-
-static void server_note_request_capacity(nipc_managed_server_t *server,
-                                         uint32_t payload_len);
-static void server_note_response_capacity(nipc_managed_server_t *server,
-                                          uint32_t payload_len);
 
 /* ------------------------------------------------------------------ */
 /*  Internal: client connection helpers                                */
@@ -431,12 +381,13 @@ static nipc_error_t transport_send(nipc_client_ctx_t *ctx,
 
     if (ctx->shm) {
         if (payload_len > ctx->session.max_request_payload_bytes) {
-            client_note_request_capacity(ctx, (uint32_t)payload_len);
+            nipc_service_common_client_note_request_capacity(
+                ctx, (uint32_t)payload_len);
             return NIPC_ERR_OVERFLOW;
         }
 
         size_t msg_len;
-        if (!header_payload_len(payload_len, &msg_len))
+        if (!nipc_service_common_header_payload_len(payload_len, &msg_len))
             return NIPC_ERR_OVERFLOW;
 
         uint8_t *msg = ctx->send_buf;
@@ -455,7 +406,8 @@ static nipc_error_t transport_send(nipc_client_ctx_t *ctx,
 
         nipc_win_shm_error_t serr = nipc_win_shm_send(ctx->shm, msg, msg_len);
         if (serr == NIPC_WIN_SHM_ERR_MSG_TOO_LARGE) {
-            client_note_request_capacity(ctx, (uint32_t)payload_len);
+            nipc_service_common_client_note_request_capacity(
+                ctx, (uint32_t)payload_len);
             return NIPC_ERR_OVERFLOW;
         }
         return (serr == NIPC_WIN_SHM_OK) ? NIPC_OK : NIPC_ERR_NOT_READY;
@@ -465,7 +417,8 @@ static nipc_error_t transport_send(nipc_client_ctx_t *ctx,
     nipc_np_error_t uerr = nipc_np_send(&ctx->session, hdr,
                                           payload, payload_len);
     if (uerr == NIPC_NP_ERR_LIMIT_EXCEEDED) {
-        client_note_request_capacity(ctx, (uint32_t)payload_len);
+        nipc_service_common_client_note_request_capacity(
+            ctx, (uint32_t)payload_len);
         return NIPC_ERR_OVERFLOW;
     }
     return (uerr == NIPC_NP_OK) ? NIPC_OK : NIPC_ERR_NOT_READY;
@@ -545,25 +498,7 @@ static nipc_error_t do_raw_call(nipc_client_ctx_t *ctx,
         return NIPC_ERR_BAD_LAYOUT;
     if (resp_hdr.message_id != hdr.message_id)
         return NIPC_ERR_BAD_LAYOUT;
-    switch (resp_hdr.transport_status) {
-    case NIPC_STATUS_OK:
-        break;
-    case NIPC_STATUS_LIMIT_EXCEEDED:
-        if (ctx->session.max_response_payload_bytes > 0) {
-            uint32_t current = ctx->session.max_response_payload_bytes;
-            client_note_response_capacity(
-                ctx, current >= UINT32_MAX / 2u ? UINT32_MAX : current * 2u);
-        }
-        return NIPC_ERR_OVERFLOW;
-    case NIPC_STATUS_UNSUPPORTED:
-        return NIPC_ERR_BAD_LAYOUT;
-    case NIPC_STATUS_BAD_ENVELOPE:
-    case NIPC_STATUS_INTERNAL_ERROR:
-    default:
-        return NIPC_ERR_BAD_LAYOUT;
-    }
-
-    return NIPC_OK;
+    return nipc_service_common_response_status_to_error(ctx, &resp_hdr);
 }
 
 /*
@@ -669,41 +604,6 @@ typedef struct {
     nipc_apps_lookup_resp_view_t *view_out;
 } apps_lookup_call_state_t;
 
-static bool cgroups_lookup_request_size(const nipc_str_view_t *paths,
-                                        uint32_t path_count,
-                                        size_t *size_out)
-{
-    if (service_mul_would_overflow((size_t)path_count, NIPC_LOOKUP_DIR_ENTRY_SIZE))
-        return false;
-
-    size_t data = NIPC_CGROUPS_LOOKUP_REQ_HDR_SIZE +
-                  (size_t)path_count * NIPC_LOOKUP_DIR_ENTRY_SIZE;
-    for (uint32_t i = 0; i < path_count; i++) {
-        size_t aligned = nipc_align8(data);
-        if (aligned < data)
-            return false;
-        if (!paths || paths[i].len > SIZE_MAX - aligned - 1u)
-            return false;
-        data = aligned + (size_t)paths[i].len + 1u;
-    }
-    *size_out = data;
-    return true;
-}
-
-static bool apps_lookup_request_size(uint32_t pid_count, size_t *size_out)
-{
-    if (service_mul_would_overflow((size_t)pid_count, NIPC_LOOKUP_DIR_ENTRY_SIZE) ||
-        service_mul_would_overflow((size_t)pid_count, NIPC_APPS_LOOKUP_KEY_SIZE))
-        return false;
-    size_t dir = (size_t)pid_count * NIPC_LOOKUP_DIR_ENTRY_SIZE;
-    size_t keys = (size_t)pid_count * NIPC_APPS_LOOKUP_KEY_SIZE;
-    if (NIPC_APPS_LOOKUP_REQ_HDR_SIZE > SIZE_MAX - dir ||
-        NIPC_APPS_LOOKUP_REQ_HDR_SIZE + dir > SIZE_MAX - keys)
-        return false;
-    *size_out = NIPC_APPS_LOOKUP_REQ_HDR_SIZE + dir + keys;
-    return true;
-}
-
 static nipc_error_t do_cgroups_attempt(nipc_client_ctx_t *ctx, void *state)
 {
     cgroups_call_state_t *s = (cgroups_call_state_t *)state;
@@ -730,13 +630,14 @@ static nipc_error_t do_cgroups_lookup_attempt(nipc_client_ctx_t *ctx, void *stat
     cgroups_lookup_call_state_t *s = (cgroups_lookup_call_state_t *)state;
 
     size_t req_size;
-    if (!cgroups_lookup_request_size(s->paths, s->path_count, &req_size))
+    if (!nipc_service_common_cgroups_lookup_request_size(
+            s->paths, s->path_count, &req_size))
         return NIPC_ERR_OVERFLOW;
     if (req_size > UINT32_MAX)
         return NIPC_ERR_OVERFLOW;
     if (ctx->session.max_request_payload_bytes > 0 &&
         req_size > ctx->session.max_request_payload_bytes) {
-        client_note_request_capacity(ctx, (uint32_t)req_size);
+        nipc_service_common_client_note_request_capacity(ctx, (uint32_t)req_size);
         return NIPC_ERR_OVERFLOW;
     }
     if (!ensure_buffer(&ctx->send_buf, &ctx->send_buf_size, req_size,
@@ -778,13 +679,13 @@ static nipc_error_t do_apps_lookup_attempt(nipc_client_ctx_t *ctx, void *state)
     apps_lookup_call_state_t *s = (apps_lookup_call_state_t *)state;
 
     size_t req_size;
-    if (!apps_lookup_request_size(s->pid_count, &req_size))
+    if (!nipc_service_common_apps_lookup_request_size(s->pid_count, &req_size))
         return NIPC_ERR_OVERFLOW;
     if (req_size > UINT32_MAX)
         return NIPC_ERR_OVERFLOW;
     if (ctx->session.max_request_payload_bytes > 0 &&
         req_size > ctx->session.max_request_payload_bytes) {
-        client_note_request_capacity(ctx, (uint32_t)req_size);
+        nipc_service_common_client_note_request_capacity(ctx, (uint32_t)req_size);
         return NIPC_ERR_OVERFLOW;
     }
     if (!ensure_buffer(&ctx->send_buf, &ctx->send_buf_size, req_size,
@@ -829,33 +730,16 @@ void nipc_client_init(nipc_client_ctx_t *ctx,
                       const char *service_name,
                       const nipc_client_config_t *config)
 {
-    memset(ctx, 0, sizeof(*ctx));
-    ctx->state = NIPC_CLIENT_DISCONNECTED;
+    nipc_service_common_client_init(ctx, run_dir, service_name);
     ctx->session.pipe = INVALID_HANDLE_VALUE;
-    ctx->session_valid = false;
-    ctx->shm = NULL;
-
-    if (run_dir) {
-        size_t len = strlen(run_dir);
-        if (len >= sizeof(ctx->run_dir))
-            len = sizeof(ctx->run_dir) - 1;
-        memcpy(ctx->run_dir, run_dir, len);
-        ctx->run_dir[len] = '\0';
-    }
-
-    if (service_name) {
-        size_t len = strlen(service_name);
-        if (len >= sizeof(ctx->service_name))
-            len = sizeof(ctx->service_name) - 1;
-        memcpy(ctx->service_name, service_name, len);
-        ctx->service_name[len] = '\0';
-    }
 
     ctx->transport_config = service_client_config_to_transport(config);
     if (ctx->transport_config.max_request_payload_bytes == 0)
-        ctx->transport_config.max_request_payload_bytes = cgroups_request_payload_default();
+        ctx->transport_config.max_request_payload_bytes =
+            nipc_service_common_cgroups_request_payload_default();
     if (ctx->transport_config.max_response_payload_bytes == 0)
-        ctx->transport_config.max_response_payload_bytes = cgroups_response_payload_default();
+        ctx->transport_config.max_response_payload_bytes =
+            nipc_service_common_cgroups_response_payload_default();
 }
 
 bool nipc_client_refresh(nipc_client_ctx_t *ctx)
@@ -892,23 +776,13 @@ bool nipc_client_refresh(nipc_client_ctx_t *ctx)
 void nipc_client_status(const nipc_client_ctx_t *ctx,
                         nipc_client_status_t *out)
 {
-    out->state           = ctx->state;
-    out->connect_count   = ctx->connect_count;
-    out->reconnect_count = ctx->reconnect_count;
-    out->call_count      = ctx->call_count;
-    out->error_count     = ctx->error_count;
+    nipc_service_common_client_status(ctx, out);
 }
 
 void nipc_client_close(nipc_client_ctx_t *ctx)
 {
     client_disconnect(ctx);
-    free(ctx->response_buf);
-    free(ctx->send_buf);
-    ctx->response_buf = NULL;
-    ctx->send_buf = NULL;
-    ctx->response_buf_size = 0;
-    ctx->send_buf_size = 0;
-    ctx->state = NIPC_CLIENT_DISCONNECTED;
+    nipc_service_common_client_close_buffers(ctx);
 }
 
 /* ------------------------------------------------------------------ */
@@ -970,7 +844,8 @@ static void server_handle_session(nipc_managed_server_t *server,
 {
     /* Dynamically allocate recv buffer based on negotiated max */
     size_t recv_size;
-    if (!header_payload_len(session->max_request_payload_bytes, &recv_size))
+    if (!nipc_service_common_header_payload_len(
+            session->max_request_payload_bytes, &recv_size))
         return;
     if (recv_size < NIPC_HEADER_LEN + 1024u)
         recv_size = NIPC_HEADER_LEN + 1024u;
@@ -1023,7 +898,8 @@ static void server_handle_session(nipc_managed_server_t *server,
             if (uerr == NIPC_NP_ERR_LIMIT_EXCEEDED) {
                 if (hdr.kind == NIPC_KIND_REQUEST) {
                     if (hdr.payload_len > 0)
-                        server_note_request_capacity(server, hdr.payload_len);
+                        nipc_service_common_server_note_request_capacity(
+                            server, hdr.payload_len);
 
                     nipc_header_t resp_hdr = {0};
                     resp_hdr.kind = NIPC_KIND_RESPONSE;
@@ -1072,7 +948,8 @@ static void server_handle_session(nipc_managed_server_t *server,
         }
 
         if (payload_len <= UINT32_MAX)
-            server_note_request_capacity(server, (uint32_t)payload_len);
+            nipc_service_common_server_note_request_capacity(
+                server, (uint32_t)payload_len);
 
         /* Dispatch: one request kind per service endpoint. */
         size_t response_len = 0;
@@ -1084,68 +961,18 @@ static void server_handle_session(nipc_managed_server_t *server,
             &response_len);
 
         /* Build response header */
-        nipc_header_t resp_hdr = {0};
+        nipc_header_t resp_hdr;
         bool close_after_response = false;
-        resp_hdr.kind       = NIPC_KIND_RESPONSE;
-        resp_hdr.code       = hdr.code;
-        resp_hdr.message_id = hdr.message_id;
-        if ((hdr.flags & NIPC_FLAG_BATCH) && hdr.item_count >= 1) {
-            resp_hdr.item_count = hdr.item_count;
-            resp_hdr.flags = NIPC_FLAG_BATCH;
-        } else {
-            resp_hdr.item_count = 1;
-            resp_hdr.flags = 0;
-        }
-
-        switch (dispatch_err) {
-        case NIPC_OK:
-            if (response_len > resp_buf_size ||
-                response_len > session->max_response_payload_bytes ||
-                response_len > SIZE_MAX - NIPC_HEADER_LEN) {
-                server_note_response_capacity(
-                    server,
-                    response_len >= UINT32_MAX ? UINT32_MAX : (uint32_t)response_len);
-                resp_hdr.transport_status = NIPC_STATUS_LIMIT_EXCEEDED;
-                close_after_response = true;
-                response_len = 0;
-            } else {
-                if (response_len <= UINT32_MAX)
-                    server_note_response_capacity(server, (uint32_t)response_len);
-                resp_hdr.transport_status = NIPC_STATUS_OK;
-            }
-            break;
-        case NIPC_ERR_OVERFLOW:
-            if (session->max_response_payload_bytes >= UINT32_MAX / 2u)
-                server_note_response_capacity(server, UINT32_MAX);
-            else
-                server_note_response_capacity(server,
-                                             session->max_response_payload_bytes * 2u);
-            resp_hdr.transport_status = NIPC_STATUS_LIMIT_EXCEEDED;
-            close_after_response = true;
-            response_len = 0;
-            break;
-        case NIPC_ERR_TRUNCATED:
-        case NIPC_ERR_BAD_LAYOUT:
-        case NIPC_ERR_OUT_OF_BOUNDS:
-        case NIPC_ERR_MISSING_NUL:
-        case NIPC_ERR_BAD_ALIGNMENT:
-        case NIPC_ERR_BAD_ITEM_COUNT:
-            resp_hdr.transport_status = NIPC_STATUS_BAD_ENVELOPE;
-            close_after_response = true;
-            response_len = 0;
-            break;
-        case NIPC_ERR_HANDLER_FAILED:
-        default:
-            resp_hdr.transport_status = NIPC_STATUS_INTERNAL_ERROR;
-            close_after_response = true;
-            response_len = 0;
-            break;
-        }
+        nipc_service_common_prepare_response_header(&hdr, &resp_hdr);
+        nipc_service_common_apply_dispatch_result(
+            server, dispatch_err, resp_buf_size,
+            session->max_response_payload_bytes, true,
+            &resp_hdr, &response_len, &close_after_response);
 
         /* Send response via the active transport */
         if (shm) {
             size_t msg_len;
-            if (!header_payload_len(response_len, &msg_len))
+            if (!nipc_service_common_header_payload_len(response_len, &msg_len))
                 break;
 
             resp_hdr.magic      = NIPC_MAGIC_MSG;
@@ -1179,87 +1006,6 @@ static void server_handle_session(nipc_managed_server_t *server,
     }
 
     free(recv_buf);
-}
-
-static uint32_t server_snapshot_max_items(size_t response_buf_size,
-                                          const nipc_cgroups_service_handler_t *service_handler)
-{
-    if (service_handler->snapshot_max_items != 0)
-        return service_handler->snapshot_max_items;
-    return nipc_cgroups_builder_estimate_max_items(response_buf_size);
-}
-
-static void server_note_request_capacity(nipc_managed_server_t *server,
-                                         uint32_t payload_len)
-{
-    uint32_t grown = next_power_of_2_u32(payload_len);
-    uint32_t current = server->learned_request_payload_bytes;
-    while (grown > current) {
-        uint32_t previous = (uint32_t)InterlockedCompareExchange(
-            (volatile LONG *)&server->learned_request_payload_bytes,
-            (LONG)grown, (LONG)current);
-        if (previous == current)
-            break;
-        current = previous;
-    }
-}
-
-static void server_note_response_capacity(nipc_managed_server_t *server,
-                                          uint32_t payload_len)
-{
-    uint32_t grown = next_power_of_2_u32(payload_len);
-    uint32_t current = server->learned_response_payload_bytes;
-    while (grown > current) {
-        uint32_t previous = (uint32_t)InterlockedCompareExchange(
-            (volatile LONG *)&server->learned_response_payload_bytes,
-            (LONG)grown, (LONG)current);
-        if (previous == current)
-            break;
-        current = previous;
-    }
-}
-
-static nipc_error_t server_typed_dispatch(void *user,
-                                          const nipc_header_t *request_hdr,
-                                          const uint8_t *request_payload,
-                                          size_t request_len,
-                                          uint8_t *response_buf,
-                                          size_t response_buf_size,
-                                          size_t *response_len_out)
-{
-    nipc_managed_server_t *server = (nipc_managed_server_t *)user;
-    (void)request_hdr;
-
-    switch (server->expected_method_code) {
-    case NIPC_METHOD_CGROUPS_SNAPSHOT: {
-        nipc_cgroups_service_handler_t *service_handler = &server->service_handler;
-        if (!service_handler->handle)
-            return NIPC_ERR_HANDLER_FAILED;
-        return nipc_dispatch_cgroups_snapshot(
-            request_payload, request_len,
-            response_buf, response_buf_size, response_len_out,
-            server_snapshot_max_items(response_buf_size, service_handler),
-            service_handler->handle, service_handler->user);
-    }
-    case NIPC_METHOD_CGROUPS_LOOKUP:
-        if (!server->cgroups_lookup_handler.handle)
-            return NIPC_ERR_HANDLER_FAILED;
-        return nipc_dispatch_cgroups_lookup(
-            request_payload, request_len,
-            response_buf, response_buf_size, response_len_out,
-            server->cgroups_lookup_handler.handle,
-            server->cgroups_lookup_handler.user);
-    case NIPC_METHOD_APPS_LOOKUP:
-        if (!server->apps_lookup_handler.handle)
-            return NIPC_ERR_HANDLER_FAILED;
-        return nipc_dispatch_apps_lookup(
-            request_payload, request_len,
-            response_buf, response_buf_size, response_len_out,
-            server->apps_lookup_handler.handle,
-            server->apps_lookup_handler.user);
-    default:
-        return NIPC_ERR_HANDLER_FAILED;
-    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1376,8 +1122,10 @@ static bool server_prepare_accept_config(nipc_managed_server_t *server,
 
     uint32_t request_capacity;
     uint32_t response_capacity;
-    if (!header_payload_len_u32(NIPC_MAX_PAYLOAD_CAP, &request_capacity) ||
-        !header_payload_len_u32(cfg_out->max_response_payload_bytes, &response_capacity)) {
+    if (!nipc_service_common_header_payload_len_u32(
+            NIPC_MAX_PAYLOAD_CAP, &request_capacity) ||
+        !nipc_service_common_header_payload_len_u32(
+            cfg_out->max_response_payload_bytes, &response_capacity)) {
         cfg_out->supported_profiles &= ~shm_profiles;
         cfg_out->preferred_profiles &= ~shm_profiles;
         return cfg_out->supported_profiles != 0;
@@ -1560,14 +1308,16 @@ nipc_error_t nipc_server_init_typed(nipc_managed_server_t *server,
 
     nipc_np_server_config_t typed_cfg = service_server_config_to_transport(config);
     if (typed_cfg.max_request_payload_bytes == 0)
-        typed_cfg.max_request_payload_bytes = cgroups_request_payload_default();
+        typed_cfg.max_request_payload_bytes =
+            nipc_service_common_cgroups_request_payload_default();
     if (typed_cfg.max_response_payload_bytes == 0)
-        typed_cfg.max_response_payload_bytes = cgroups_response_payload_default();
+        typed_cfg.max_response_payload_bytes =
+            nipc_service_common_cgroups_response_payload_default();
 
     nipc_error_t err = server_init_raw(server, run_dir, service_name,
                                        &typed_cfg, worker_count,
                                        NIPC_METHOD_CGROUPS_SNAPSHOT,
-                                       server_typed_dispatch, server);
+                                       nipc_service_common_typed_dispatch, server);
     if (err != NIPC_OK)
         return err;
 
@@ -1588,14 +1338,16 @@ nipc_error_t nipc_server_init_cgroups_lookup(
 
     nipc_np_server_config_t typed_cfg = service_server_config_to_transport(config);
     if (typed_cfg.max_request_payload_bytes == 0)
-        typed_cfg.max_request_payload_bytes = cgroups_response_payload_default();
+        typed_cfg.max_request_payload_bytes =
+            nipc_service_common_cgroups_response_payload_default();
     if (typed_cfg.max_response_payload_bytes == 0)
-        typed_cfg.max_response_payload_bytes = cgroups_response_payload_default();
+        typed_cfg.max_response_payload_bytes =
+            nipc_service_common_cgroups_response_payload_default();
 
     nipc_error_t err = server_init_raw(server, run_dir, service_name,
                                        &typed_cfg, worker_count,
                                        NIPC_METHOD_CGROUPS_LOOKUP,
-                                       server_typed_dispatch, server);
+                                       nipc_service_common_typed_dispatch, server);
     if (err != NIPC_OK)
         return err;
 
@@ -1616,14 +1368,16 @@ nipc_error_t nipc_server_init_apps_lookup(
 
     nipc_np_server_config_t typed_cfg = service_server_config_to_transport(config);
     if (typed_cfg.max_request_payload_bytes == 0)
-        typed_cfg.max_request_payload_bytes = cgroups_response_payload_default();
+        typed_cfg.max_request_payload_bytes =
+            nipc_service_common_cgroups_response_payload_default();
     if (typed_cfg.max_response_payload_bytes == 0)
-        typed_cfg.max_response_payload_bytes = cgroups_response_payload_default();
+        typed_cfg.max_response_payload_bytes =
+            nipc_service_common_cgroups_response_payload_default();
 
     nipc_error_t err = server_init_raw(server, run_dir, service_name,
                                        &typed_cfg, worker_count,
                                        NIPC_METHOD_APPS_LOOKUP,
-                                       server_typed_dispatch, server);
+                                       nipc_service_common_typed_dispatch, server);
     if (err != NIPC_OK)
         return err;
 
@@ -1673,8 +1427,10 @@ void nipc_server_run(nipc_managed_server_t *server)
             continue;
         }
 
-        server_note_request_capacity(server, session.max_request_payload_bytes);
-        server_note_response_capacity(server, session.max_response_payload_bytes);
+        nipc_service_common_server_note_request_capacity(
+            server, session.max_request_payload_bytes);
+        nipc_service_common_server_note_response_capacity(
+            server, session.max_response_payload_bytes);
 
         /* Enforce worker_count limit: reap finished sessions, check count */
         EnterCriticalSection(&server->sessions_lock);
@@ -1867,182 +1623,17 @@ void nipc_server_destroy(nipc_managed_server_t *server)
 /*  L3: Client-side cgroups snapshot cache                             */
 /* ------------------------------------------------------------------ */
 
-/* Free all owned strings in cache items and the items array itself. */
-static void cache_free_items(nipc_cgroups_cache_item_t *items, uint32_t count)
-{
-    if (!items)
-        return;
-
-    for (uint32_t i = 0; i < count; i++) {
-        free(items[i].name);
-        free(items[i].path);
-    }
-    free(items);
-}
-
-/* Hash a name string (djb2). Combined with item hash for bucket index. */
-static uint32_t cache_hash_name(const char *name)
-{
-    uint32_t h = 5381;
-    for (const unsigned char *p = (const unsigned char *)name; *p; p++)
-        h = ((h << 5) + h) + *p;
-    return h;
-}
-
-/*
- * Build the open-addressing hash table from the items array.
- * Uses (item.hash ^ name_hash) as the probe key.
- * Load factor <= 0.5 (bucket_count >= 2 * item_count).
- */
-static bool cache_build_hashtable(nipc_cgroups_cache_t *cache)
-{
-    free(cache->buckets);
-    cache->buckets = NULL;
-    cache->bucket_count = 0;
-
-    if (cache->item_count == 0)
-        return true;
-
-    uint32_t bcount = next_power_of_2_u32(cache->item_count * 2);
-    nipc_cgroups_hash_bucket_t *buckets = service_calloc(
-        bcount, sizeof(nipc_cgroups_hash_bucket_t),
-        NIPC_WIN_SERVICE_TEST_FAULT_CACHE_BUCKETS_CALLOC_INTERNAL);
-    if (!buckets)
-        return false;
-
-    uint32_t mask = bcount - 1;
-    for (uint32_t i = 0; i < cache->item_count; i++) {
-        uint32_t key = cache->items[i].hash ^ cache_hash_name(cache->items[i].name);
-        uint32_t slot = key & mask;
-
-        /* Linear probe for an empty bucket */
-        while (buckets[slot].used)
-            slot = (slot + 1) & mask;
-
-        buckets[slot].index = i;
-        buckets[slot].used = true;
-    }
-
-    cache->buckets = buckets;
-    cache->bucket_count = bcount;
-    return true;
-}
-
-static nipc_cgroups_cache_item_t *cache_build_items(
-    const nipc_cgroups_resp_view_t *view,
-    uint32_t *count_out)
-{
-    uint32_t n = view->item_count;
-    *count_out = 0;
-
-    if (n == 0)
-        return NULL;
-
-    nipc_cgroups_cache_item_t *items = service_calloc(
-        n, sizeof(nipc_cgroups_cache_item_t),
-        NIPC_WIN_SERVICE_TEST_FAULT_CACHE_ITEMS_CALLOC_INTERNAL);
-    if (!items)
-        return NULL;
-
-    for (uint32_t i = 0; i < n; i++) {
-        nipc_cgroups_item_view_t iv;
-        nipc_error_t err = nipc_cgroups_resp_item(view, i, &iv);
-        if (err != NIPC_OK) {
-            cache_free_items(items, i);
-            return NULL;
-        }
-
-        items[i].hash    = iv.hash;
-        items[i].options = iv.options;
-        items[i].enabled = iv.enabled;
-
-        items[i].name = service_malloc(
-            iv.name.len + 1, NIPC_WIN_SERVICE_TEST_FAULT_CACHE_ITEM_NAME_MALLOC_INTERNAL);
-        if (!items[i].name) {
-            cache_free_items(items, i);
-            return NULL;
-        }
-        if (iv.name.len > 0)
-            memcpy(items[i].name, iv.name.ptr, iv.name.len);
-        items[i].name[iv.name.len] = '\0';
-
-        items[i].path = service_malloc(
-            iv.path.len + 1, NIPC_WIN_SERVICE_TEST_FAULT_CACHE_ITEM_PATH_MALLOC_INTERNAL);
-        if (!items[i].path) {
-            free(items[i].name);
-            cache_free_items(items, i);
-            return NULL;
-        }
-        if (iv.path.len > 0)
-            memcpy(items[i].path, iv.path.ptr, iv.path.len);
-        items[i].path[iv.path.len] = '\0';
-    }
-
-    *count_out = n;
-    return items;
-}
-
 void nipc_cgroups_cache_init(nipc_cgroups_cache_t *cache,
                              const char *run_dir,
                              const char *service_name,
                              const nipc_client_config_t *config)
 {
-    memset(cache, 0, sizeof(*cache));
-
-    nipc_client_init(&cache->client, run_dir, service_name, config);
-
-    cache->items = NULL;
-    cache->item_count = 0;
-    cache->systemd_enabled = 0;
-    cache->generation = 0;
-    cache->populated = false;
-    cache->buckets = NULL;
-    cache->bucket_count = 0;
-    cache->refresh_success_count = 0;
-    cache->refresh_failure_count = 0;
-
-    cache->response_buf = NULL;
-    cache->response_buf_size = 0;
+    nipc_service_common_cgroups_cache_init(cache, run_dir, service_name, config);
 }
 
 bool nipc_cgroups_cache_refresh(nipc_cgroups_cache_t *cache)
 {
-    nipc_client_refresh(&cache->client);
-
-    nipc_cgroups_resp_view_t view;
-    nipc_error_t err = nipc_client_call_cgroups_snapshot(&cache->client, &view);
-
-    if (err != NIPC_OK) {
-        cache->refresh_failure_count++;
-        return false;
-    }
-
-    uint32_t new_count = 0;
-    nipc_cgroups_cache_item_t *new_items = NULL;
-
-    if (view.item_count > 0) {
-        new_items = cache_build_items(&view, &new_count);
-        if (!new_items && view.item_count > 0) {
-            cache->refresh_failure_count++;
-            return false;
-        }
-    }
-
-    cache_free_items(cache->items, cache->item_count);
-    cache->items = new_items;
-    cache->item_count = new_count;
-    cache->systemd_enabled = view.systemd_enabled;
-    cache->generation = view.generation;
-    cache->populated = true;
-    cache->refresh_success_count++;
-
-    /* Record monotonic timestamp (GetTickCount64 is always available on Windows) */
-    cache->last_refresh_ts = GetTickCount64();
-
-    /* Rebuild hash table for O(1) lookup */
-    cache_build_hashtable(cache);
-
-    return true;
+    return nipc_service_common_cgroups_cache_refresh(cache, &cgroups_cache_ops);
 }
 
 const nipc_cgroups_cache_item_t *nipc_cgroups_cache_lookup(
@@ -2050,66 +1641,18 @@ const nipc_cgroups_cache_item_t *nipc_cgroups_cache_lookup(
     uint32_t hash,
     const char *name)
 {
-    if (!cache->populated || !cache->items || !name)
-        return NULL;
-
-    /* Use hash table if available, fall back to linear scan */
-    if (cache->buckets && cache->bucket_count > 0) {
-        uint32_t key = hash ^ cache_hash_name(name);
-        uint32_t mask = cache->bucket_count - 1;
-        uint32_t slot = key & mask;
-
-        while (cache->buckets[slot].used) {
-            uint32_t idx = cache->buckets[slot].index;
-            if (cache->items[idx].hash == hash &&
-                strcmp(cache->items[idx].name, name) == 0) {
-                return &cache->items[idx];
-            }
-            slot = (slot + 1) & mask;
-        }
-        return NULL;
-    }
-
-    /* Fallback linear scan (hash table allocation failed) */
-    for (uint32_t i = 0; i < cache->item_count; i++) {
-        if (cache->items[i].hash == hash &&
-            strcmp(cache->items[i].name, name) == 0) {
-            return &cache->items[i];
-        }
-    }
-
-    return NULL;
+    return nipc_service_common_cgroups_cache_lookup(cache, hash, name);
 }
 
 void nipc_cgroups_cache_status(const nipc_cgroups_cache_t *cache,
                                 nipc_cgroups_cache_status_t *out)
 {
-    out->populated             = cache->populated;
-    out->item_count            = cache->item_count;
-    out->systemd_enabled       = cache->systemd_enabled;
-    out->generation            = cache->generation;
-    out->refresh_success_count = cache->refresh_success_count;
-    out->refresh_failure_count = cache->refresh_failure_count;
-    out->connection_state      = cache->client.state;
-    out->last_refresh_ts       = cache->last_refresh_ts;
+    nipc_service_common_cgroups_cache_status(cache, out);
 }
 
 void nipc_cgroups_cache_close(nipc_cgroups_cache_t *cache)
 {
-    cache_free_items(cache->items, cache->item_count);
-    cache->items = NULL;
-    cache->item_count = 0;
-    cache->populated = false;
-
-    free(cache->buckets);
-    cache->buckets = NULL;
-    cache->bucket_count = 0;
-
-    free(cache->response_buf);
-    cache->response_buf = NULL;
-    cache->response_buf_size = 0;
-
-    nipc_client_close(&cache->client);
+    nipc_service_common_cgroups_cache_close(cache);
 }
 
 #endif /* _WIN32 || __MSYS__ */
