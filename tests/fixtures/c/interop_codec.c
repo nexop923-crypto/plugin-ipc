@@ -32,19 +32,17 @@ static int g_fail = 0;
     } while (0)
 
 /* Write raw bytes to a file. Returns 0 on success. */
-static int write_file(const char *dir, const char *name,
+static int write_file(int dir_fd, const char *name,
                        const void *data, size_t len) {
-    char path[512];
-    snprintf(path, sizeof(path), "%s/%s", dir, name);
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    int fd = openat(dir_fd, name, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
     if (fd < 0) {
-        fprintf(stderr, "ERROR: cannot open %s for writing\n", path);
+        fprintf(stderr, "ERROR: cannot open %s for writing\n", name);
         return 1;
     }
     FILE *f = fdopen(fd, "wb");
     if (!f) {
         close(fd);
-        fprintf(stderr, "ERROR: cannot open %s for writing\n", path);
+        fprintf(stderr, "ERROR: cannot open %s for writing\n", name);
         return 1;
     }
     if (fwrite(data, 1, len, f) != len) {
@@ -56,19 +54,17 @@ static int write_file(const char *dir, const char *name,
 }
 
 /* Read raw bytes from a file. Returns bytes read, 0 on failure. */
-static size_t read_file(const char *dir, const char *name,
+static size_t read_file(int dir_fd, const char *name,
                          void *buf, size_t buf_len) {
-    char path[512];
-    snprintf(path, sizeof(path), "%s/%s", dir, name);
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    int fd = openat(dir_fd, name, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
-        fprintf(stderr, "ERROR: cannot open %s for reading\n", path);
+        fprintf(stderr, "ERROR: cannot open %s for reading\n", name);
         return 0;
     }
     FILE *f = fdopen(fd, "rb");
     if (!f) {
         close(fd);
-        fprintf(stderr, "ERROR: cannot open %s for reading\n", path);
+        fprintf(stderr, "ERROR: cannot open %s for reading\n", name);
         return 0;
     }
     size_t n = fread(buf, 1, buf_len, f);
@@ -80,7 +76,7 @@ static size_t read_file(const char *dir, const char *name,
 /*  Encode all test messages                                           */
 /* ================================================================== */
 
-static int do_encode(const char *dir) {
+static int do_encode(int dir_fd) {
     uint8_t buf[8192];
     int err = 0;
 
@@ -99,7 +95,7 @@ static int do_encode(const char *dir) {
             .message_id       = 0xDEADBEEFCAFEBABEULL,
         };
         size_t n = nipc_header_encode(&h, buf, sizeof(buf));
-        err |= write_file(dir, "header.bin", buf, n);
+        err |= write_file(dir_fd, "header.bin", buf, n);
     }
 
     /* 2. Chunk continuation header */
@@ -115,7 +111,7 @@ static int do_encode(const char *dir) {
             .chunk_payload_len = 8192,
         };
         size_t n = nipc_chunk_header_encode(&c, buf, sizeof(buf));
-        err |= write_file(dir, "chunk_header.bin", buf, n);
+        err |= write_file(dir_fd, "chunk_header.bin", buf, n);
     }
 
     /* 3. Hello payload */
@@ -133,7 +129,7 @@ static int do_encode(const char *dir) {
             .packet_size               = 65536,
         };
         size_t n = nipc_hello_encode(&h, buf, sizeof(buf));
-        err |= write_file(dir, "hello.bin", buf, n);
+        err |= write_file(dir_fd, "hello.bin", buf, n);
     }
 
     /* 4. Hello-ack payload */
@@ -152,14 +148,14 @@ static int do_encode(const char *dir) {
             .session_id                        = 1,
         };
         size_t n = nipc_hello_ack_encode(&h, buf, sizeof(buf));
-        err |= write_file(dir, "hello_ack.bin", buf, n);
+        err |= write_file(dir_fd, "hello_ack.bin", buf, n);
     }
 
     /* 5. Cgroups request */
     {
         nipc_cgroups_req_t r = {.layout_version = 1, .flags = 0};
         size_t n = nipc_cgroups_req_encode(&r, buf, sizeof(buf));
-        err |= write_file(dir, "cgroups_req.bin", buf, n);
+        err |= write_file(dir_fd, "cgroups_req.bin", buf, n);
     }
 
     /* 6. Cgroups snapshot response (multi-item) */
@@ -185,7 +181,7 @@ static int do_encode(const char *dir) {
                                   n2, 0, p2, 0);
 
         size_t total = nipc_cgroups_builder_finish(&b);
-        err |= write_file(dir, "cgroups_resp.bin", buf, total);
+        err |= write_file(dir_fd, "cgroups_resp.bin", buf, total);
     }
 
     /* 7. Empty cgroups snapshot */
@@ -193,7 +189,7 @@ static int do_encode(const char *dir) {
         nipc_cgroups_builder_t b;
         nipc_cgroups_builder_init(&b, buf, sizeof(buf), 0, 0, 42);
         size_t total = nipc_cgroups_builder_finish(&b);
-        err |= write_file(dir, "cgroups_resp_empty.bin", buf, total);
+        err |= write_file(dir_fd, "cgroups_resp_empty.bin", buf, total);
     }
 
     /* 8. CGROUPS_LOOKUP request variants */
@@ -203,10 +199,10 @@ static int do_encode(const char *dir) {
             {.ptr = "/system.slice/docker-abc.scope", .len = (uint32_t)strlen("/system.slice/docker-abc.scope")},
         };
         size_t total = nipc_cgroups_lookup_req_encode(paths, 2, buf, sizeof(buf));
-        err |= write_file(dir, "cgroups_lookup_req.bin", buf, total);
+        err |= write_file(dir_fd, "cgroups_lookup_req.bin", buf, total);
 
         total = nipc_cgroups_lookup_req_encode(NULL, 0, buf, sizeof(buf));
-        err |= write_file(dir, "cgroups_lookup_req_empty.bin", buf, total);
+        err |= write_file(dir_fd, "cgroups_lookup_req_empty.bin", buf, total);
     }
 
     /* 9. CGROUPS_LOOKUP response variants */
@@ -223,7 +219,7 @@ static int do_encode(const char *dir) {
                                         "pod-a", 5,
                                         labels, 2);
         size_t total = nipc_cgroups_lookup_builder_finish(&b);
-        err |= write_file(dir, "cgroups_lookup_resp_known_with_labels.bin", buf, total);
+        err |= write_file(dir_fd, "cgroups_lookup_resp_known_with_labels.bin", buf, total);
     }
     {
         nipc_cgroups_lookup_builder_t b;
@@ -234,7 +230,7 @@ static int do_encode(const char *dir) {
                                         "", 0,
                                         NULL, 0);
         size_t total = nipc_cgroups_lookup_builder_finish(&b);
-        err |= write_file(dir, "cgroups_lookup_resp_known_no_labels.bin", buf, total);
+        err |= write_file(dir_fd, "cgroups_lookup_resp_known_no_labels.bin", buf, total);
     }
     {
         nipc_cgroups_lookup_builder_t b;
@@ -242,7 +238,7 @@ static int do_encode(const char *dir) {
         nipc_cgroups_lookup_builder_add(&b, NIPC_CGROUP_LOOKUP_UNKNOWN_RETRY_LATER,
                                         0, "/missing/retry", 14, "", 0, NULL, 0);
         size_t total = nipc_cgroups_lookup_builder_finish(&b);
-        err |= write_file(dir, "cgroups_lookup_resp_unknown_retry.bin", buf, total);
+        err |= write_file(dir_fd, "cgroups_lookup_resp_unknown_retry.bin", buf, total);
     }
     {
         nipc_cgroups_lookup_builder_t b;
@@ -250,23 +246,23 @@ static int do_encode(const char *dir) {
         nipc_cgroups_lookup_builder_add(&b, NIPC_CGROUP_LOOKUP_UNKNOWN_PERMANENT,
                                         0, "/gone", 5, "", 0, NULL, 0);
         size_t total = nipc_cgroups_lookup_builder_finish(&b);
-        err |= write_file(dir, "cgroups_lookup_resp_unknown_permanent.bin", buf, total);
+        err |= write_file(dir_fd, "cgroups_lookup_resp_unknown_permanent.bin", buf, total);
     }
     {
         nipc_cgroups_lookup_builder_t b;
         nipc_cgroups_lookup_builder_init(&b, buf, sizeof(buf), 0, 104);
         size_t total = nipc_cgroups_lookup_builder_finish(&b);
-        err |= write_file(dir, "cgroups_lookup_resp_empty.bin", buf, total);
+        err |= write_file(dir_fd, "cgroups_lookup_resp_empty.bin", buf, total);
     }
 
     /* 10. APPS_LOOKUP request variants */
     {
         uint32_t pids[3] = {0, 1234, 4321};
         size_t total = nipc_apps_lookup_req_encode(pids, 3, buf, sizeof(buf));
-        err |= write_file(dir, "apps_lookup_req.bin", buf, total);
+        err |= write_file(dir_fd, "apps_lookup_req.bin", buf, total);
 
         total = nipc_apps_lookup_req_encode(NULL, 0, buf, sizeof(buf));
-        err |= write_file(dir, "apps_lookup_req_empty.bin", buf, total);
+        err |= write_file(dir_fd, "apps_lookup_req_empty.bin", buf, total);
     }
 
     /* 11. APPS_LOOKUP response variants */
@@ -286,7 +282,7 @@ static int do_encode(const char *dir) {
                                      "container-a", 11,
                                      labels, 2);
         size_t total = nipc_apps_lookup_builder_finish(&b);
-        err |= write_file(dir, "apps_lookup_resp_known_full.bin", buf, total);
+        err |= write_file(dir_fd, "apps_lookup_resp_known_full.bin", buf, total);
     }
     {
         nipc_apps_lookup_builder_t b;
@@ -298,7 +294,7 @@ static int do_encode(const char *dir) {
                                      "/pending", 8,
                                      "", 0, NULL, 0);
         size_t total = nipc_apps_lookup_builder_finish(&b);
-        err |= write_file(dir, "apps_lookup_resp_known_retry.bin", buf, total);
+        err |= write_file(dir_fd, "apps_lookup_resp_known_retry.bin", buf, total);
     }
     {
         nipc_apps_lookup_builder_t b;
@@ -310,7 +306,7 @@ static int do_encode(const char *dir) {
                                      "/permanent", 10,
                                      "", 0, NULL, 0);
         size_t total = nipc_apps_lookup_builder_finish(&b);
-        err |= write_file(dir, "apps_lookup_resp_known_permanent.bin", buf, total);
+        err |= write_file(dir_fd, "apps_lookup_resp_known_permanent.bin", buf, total);
     }
     {
         nipc_apps_lookup_builder_t b;
@@ -321,7 +317,7 @@ static int do_encode(const char *dir) {
                                      "sshd", 4,
                                      "", 0, "", 0, NULL, 0);
         size_t total = nipc_apps_lookup_builder_finish(&b);
-        err |= write_file(dir, "apps_lookup_resp_known_host_root.bin", buf, total);
+        err |= write_file(dir_fd, "apps_lookup_resp_known_host_root.bin", buf, total);
     }
     {
         nipc_apps_lookup_builder_t b;
@@ -331,13 +327,13 @@ static int do_encode(const char *dir) {
                                      0, 0, 0, NIPC_UID_UNSET, 0,
                                      "", 0, "", 0, "", 0, NULL, 0);
         size_t total = nipc_apps_lookup_builder_finish(&b);
-        err |= write_file(dir, "apps_lookup_resp_unknown_pid.bin", buf, total);
+        err |= write_file(dir_fd, "apps_lookup_resp_unknown_pid.bin", buf, total);
     }
     {
         nipc_apps_lookup_builder_t b;
         nipc_apps_lookup_builder_init(&b, buf, sizeof(buf), 0, 205);
         size_t total = nipc_apps_lookup_builder_finish(&b);
-        err |= write_file(dir, "apps_lookup_resp_empty.bin", buf, total);
+        err |= write_file(dir_fd, "apps_lookup_resp_empty.bin", buf, total);
     }
 
     return err;
@@ -347,12 +343,12 @@ static int do_encode(const char *dir) {
 /*  Decode and verify all test messages                                */
 /* ================================================================== */
 
-static int do_decode(const char *dir) {
+static int do_decode(int dir_fd) {
     uint8_t buf[8192];
     size_t n;
 
     /* 1. Outer message header */
-    n = read_file(dir, "header.bin", buf, sizeof(buf));
+    n = read_file(dir_fd, "header.bin", buf, sizeof(buf));
     if (n > 0) {
         nipc_header_t out;
         CHECK(nipc_header_decode(buf, n, &out) == NIPC_OK, "decode header");
@@ -372,7 +368,7 @@ static int do_decode(const char *dir) {
     }
 
     /* 2. Chunk continuation header */
-    n = read_file(dir, "chunk_header.bin", buf, sizeof(buf));
+    n = read_file(dir_fd, "chunk_header.bin", buf, sizeof(buf));
     if (n > 0) {
         nipc_chunk_header_t out;
         CHECK(nipc_chunk_header_decode(buf, n, &out) == NIPC_OK, "decode chunk");
@@ -387,7 +383,7 @@ static int do_decode(const char *dir) {
     }
 
     /* 3. Hello payload */
-    n = read_file(dir, "hello.bin", buf, sizeof(buf));
+    n = read_file(dir_fd, "hello.bin", buf, sizeof(buf));
     if (n > 0) {
         nipc_hello_t out;
         CHECK(nipc_hello_decode(buf, n, &out) == NIPC_OK, "decode hello");
@@ -405,7 +401,7 @@ static int do_decode(const char *dir) {
     }
 
     /* 4. Hello-ack payload */
-    n = read_file(dir, "hello_ack.bin", buf, sizeof(buf));
+    n = read_file(dir_fd, "hello_ack.bin", buf, sizeof(buf));
     if (n > 0) {
         nipc_hello_ack_t out;
         CHECK(nipc_hello_ack_decode(buf, n, &out) == NIPC_OK, "decode hello_ack");
@@ -423,7 +419,7 @@ static int do_decode(const char *dir) {
     }
 
     /* 5. Cgroups request */
-    n = read_file(dir, "cgroups_req.bin", buf, sizeof(buf));
+    n = read_file(dir_fd, "cgroups_req.bin", buf, sizeof(buf));
     if (n > 0) {
         nipc_cgroups_req_t out;
         CHECK(nipc_cgroups_req_decode(buf, n, &out) == NIPC_OK, "decode cgroups_req");
@@ -434,7 +430,7 @@ static int do_decode(const char *dir) {
     }
 
     /* 6. Cgroups snapshot response (multi-item) */
-    n = read_file(dir, "cgroups_resp.bin", buf, sizeof(buf));
+    n = read_file(dir_fd, "cgroups_resp.bin", buf, sizeof(buf));
     if (n > 0) {
         nipc_cgroups_resp_view_t view;
         CHECK(nipc_cgroups_resp_decode(buf, n, &view) == NIPC_OK, "decode cgroups_resp");
@@ -470,7 +466,7 @@ static int do_decode(const char *dir) {
     }
 
     /* 7. Empty cgroups snapshot */
-    n = read_file(dir, "cgroups_resp_empty.bin", buf, sizeof(buf));
+    n = read_file(dir_fd, "cgroups_resp_empty.bin", buf, sizeof(buf));
     if (n > 0) {
         nipc_cgroups_resp_view_t view;
         CHECK(nipc_cgroups_resp_decode(buf, n, &view) == NIPC_OK,
@@ -483,7 +479,7 @@ static int do_decode(const char *dir) {
     }
 
     /* 8. CGROUPS_LOOKUP request variants */
-    n = read_file(dir, "cgroups_lookup_req.bin", buf, sizeof(buf));
+    n = read_file(dir_fd, "cgroups_lookup_req.bin", buf, sizeof(buf));
     if (n > 0) {
         nipc_cgroups_lookup_req_view_t view;
         CHECK(nipc_cgroups_lookup_req_decode(buf, n, &view) == NIPC_OK,
@@ -498,7 +494,7 @@ static int do_decode(const char *dir) {
         g_fail++;
     }
 
-    n = read_file(dir, "cgroups_lookup_req_empty.bin", buf, sizeof(buf));
+    n = read_file(dir_fd, "cgroups_lookup_req_empty.bin", buf, sizeof(buf));
     if (n > 0) {
         nipc_cgroups_lookup_req_view_t view;
         CHECK(nipc_cgroups_lookup_req_decode(buf, n, &view) == NIPC_OK,
@@ -509,7 +505,7 @@ static int do_decode(const char *dir) {
     }
 
     /* 9. CGROUPS_LOOKUP response variants */
-    n = read_file(dir, "cgroups_lookup_resp_known_with_labels.bin", buf, sizeof(buf));
+    n = read_file(dir_fd, "cgroups_lookup_resp_known_with_labels.bin", buf, sizeof(buf));
     if (n > 0) {
         nipc_cgroups_lookup_resp_view_t view;
         CHECK(nipc_cgroups_lookup_resp_decode(buf, n, &view) == NIPC_OK,
@@ -537,7 +533,7 @@ static int do_decode(const char *dir) {
         "cgroups_lookup_resp_empty.bin",
     };
     for (size_t i = 0; i < sizeof(cg_resp_files) / sizeof(cg_resp_files[0]); i++) {
-        n = read_file(dir, cg_resp_files[i], buf, sizeof(buf));
+        n = read_file(dir_fd, cg_resp_files[i], buf, sizeof(buf));
         if (n > 0) {
             nipc_cgroups_lookup_resp_view_t view;
             CHECK(nipc_cgroups_lookup_resp_decode(buf, n, &view) == NIPC_OK,
@@ -548,7 +544,7 @@ static int do_decode(const char *dir) {
     }
 
     /* 10. APPS_LOOKUP request variants */
-    n = read_file(dir, "apps_lookup_req.bin", buf, sizeof(buf));
+    n = read_file(dir_fd, "apps_lookup_req.bin", buf, sizeof(buf));
     if (n > 0) {
         nipc_apps_lookup_req_view_t view;
         CHECK(nipc_apps_lookup_req_decode(buf, n, &view) == NIPC_OK,
@@ -561,7 +557,7 @@ static int do_decode(const char *dir) {
     } else {
         g_fail++;
     }
-    n = read_file(dir, "apps_lookup_req_empty.bin", buf, sizeof(buf));
+    n = read_file(dir_fd, "apps_lookup_req_empty.bin", buf, sizeof(buf));
     if (n > 0) {
         nipc_apps_lookup_req_view_t view;
         CHECK(nipc_apps_lookup_req_decode(buf, n, &view) == NIPC_OK,
@@ -572,7 +568,7 @@ static int do_decode(const char *dir) {
     }
 
     /* 11. APPS_LOOKUP response variants */
-    n = read_file(dir, "apps_lookup_resp_known_full.bin", buf, sizeof(buf));
+    n = read_file(dir_fd, "apps_lookup_resp_known_full.bin", buf, sizeof(buf));
     if (n > 0) {
         nipc_apps_lookup_resp_view_t view;
         CHECK(nipc_apps_lookup_resp_decode(buf, n, &view) == NIPC_OK,
@@ -601,7 +597,7 @@ static int do_decode(const char *dir) {
         "apps_lookup_resp_empty.bin",
     };
     for (size_t i = 0; i < sizeof(apps_resp_files) / sizeof(apps_resp_files[0]); i++) {
-        n = read_file(dir, apps_resp_files[i], buf, sizeof(buf));
+        n = read_file(dir_fd, apps_resp_files[i], buf, sizeof(buf));
         if (n > 0) {
             nipc_apps_lookup_resp_view_t view;
             CHECK(nipc_apps_lookup_resp_decode(buf, n, &view) == NIPC_OK,
@@ -622,15 +618,20 @@ int main(int argc, char **argv) {
     }
 
     char run_dir[PATH_MAX];
-    if (nipc_test_resolve_run_dir(argv[2], run_dir, sizeof(run_dir)) != 0)
+    int dir_fd = nipc_test_open_run_dir(argv[2], run_dir, sizeof(run_dir));
+    if (dir_fd < 0)
         return 1;
 
-    if (strcmp(argv[1], "encode") == 0)
-        return do_encode(run_dir);
-    else if (strcmp(argv[1], "decode") == 0)
-        return do_decode(run_dir);
-    else {
+    int rc;
+    if (strcmp(argv[1], "encode") == 0) {
+        rc = do_encode(dir_fd);
+    } else if (strcmp(argv[1], "decode") == 0) {
+        rc = do_decode(dir_fd);
+    } else {
         fprintf(stderr, "Unknown command: %s\n", argv[1]);
-        return 1;
+        rc = 1;
     }
+
+    close(dir_fd);
+    return rc;
 }

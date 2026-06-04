@@ -969,6 +969,48 @@ Raw cache, Go typed-facade, apps lookup builder, cgroups lookup builder, apps lo
   - `bash .agents/sow/audit.sh` passed.
   - Sensitive-data scan across the touched durable artifacts returned no matches.
 
+### 2026-06-04 Expanded CodeQL Findings - Second Slice
+
+- After commit `7c590c3`, the open GitHub code-scanning alerts visible during the in-progress CodeQL run dropped from 56 to 19.
+- Remaining GitHub code-scanning evidence:
+  - `cpp/path-injection`: 11 high alerts in C interop fixtures, the POSIX benchmark helper, and production POSIX service SHM attach flow.
+  - `cpp/stack-address-escape`: 3 warning alerts in the POSIX benchmark helper and production POSIX service managed-session pointer flow.
+  - `cpp/unused-local-variable`: 3 note alerts in C protocol/service tests.
+  - `cpp/wrong-type-format-argument`: 1 high alert in the C ping-pong test output.
+  - `cpp/long-switch`: 1 note alert in a C UDS malformed-response test helper.
+- Root-cause model:
+  - The remaining low-severity local-variable, format, and long-switch findings are source hygiene issues and should be fixed directly.
+  - The POSIX benchmark stack warnings are source-lifetime issues around a global stop pointer to a stack server object and should be fixed directly.
+  - The production service stack warning is an ownership/lifetime pattern: per-session threads store the managed server pointer and the server lifecycle owns thread shutdown before destruction. This needs source review before changing the API shape.
+  - The remaining path-injection alerts persist even after helper-side directory validation because CodeQL still tracks command-line `run_dir` into NetIPC APIs and file-opening sinks.
+- Decision:
+  - Continue fixing direct source hygiene findings.
+  - Do not disable the `cpp/path-injection` rule globally.
+  - For path-injection, prefer code changes that make file access relative to trusted directory descriptors. If CodeQL still flags test-only validated runtime directories, record the false-positive evidence before any narrow suppression.
+- Validation plan:
+  - Rebuild the touched C targets.
+  - Re-run focused CTest slices for protocol, UDS, service, interop, and benchmark-adjacent targets.
+  - Re-run Codacy local analysis, whitespace checks, SOW audit, and GitHub CodeQL after push.
+- Implemented:
+  - Fixed the C ping-pong test generation formatter by matching `uint64_t generation` with `PRIu64`.
+  - Removed remaining stale local variables from C protocol and service tests.
+  - Split the long UDS malformed-response switch cases into focused helper functions without changing the malformed bytes sent by the tests.
+  - Changed the POSIX benchmark server objects from stack-owned objects exposed through `g_server` to heap-owned objects destroyed and freed on exit.
+  - Changed POSIX SHM create/attach directory opening from `open(run_dir, ...)` to `opendir()` plus `dirfd()` and kept file operations directory-relative with `openat()`.
+  - Changed POSIX UDS stale socket unlink recovery from `open(run_dir, ...)` to `opendir()` plus `dirfd()` and kept unlink recovery directory-relative with `unlinkat()`.
+  - Changed the C codec interop fixture to open the validated run directory once and read/write fixture files with `openat()` relative to that directory fd.
+  - Added one narrow `cpp/stack-address-escape` source suppression at the POSIX managed-server session back-pointer assignment, with the lifecycle reason recorded in source. The public API remains stack-friendly and `nipc_server_destroy()` joins session threads before the caller may safely release the server object.
+- Local validation:
+  - `cmake --build build --target test_protocol test_uds test_service test_ping_pong bench_posix_c` passed.
+  - `cmake --build build --target netipc_shm netipc_uds netipc_service interop_codec_c interop_uds_c interop_shm_c interop_service_c interop_cache_c bench_posix_c test_uds test_shm test_service test_ping_pong` passed.
+  - `/usr/bin/ctest --test-dir build --output-on-failure -R '^(test_protocol|test_uds|test_shm|test_service|test_service_payload_limits|test_ping_pong|interop_codec|test_uds_interop|test_shm_interop|test_service_interop|test_cache_interop)$'` passed: 11/11 focused tests.
+  - `codacy-analysis analyze --output-format json` passed with 0 issues and 0 errors across Checkov, Opengrep/Semgrep, Trivy, cppcheck, ShellCheck, and Spectral.
+  - `git diff --check` passed.
+  - `bash .agents/sow/audit.sh` passed.
+  - Sensitive-data scan across touched durable artifacts found only existing synthetic test `AUTH_TOKEN` constants and generic SOW policy text; no raw credentials or private data were added.
+- GitHub validation:
+  - Pending push and CodeQL reanalysis for this second slice.
+
 ## Lessons Extracted
 
 Pending.

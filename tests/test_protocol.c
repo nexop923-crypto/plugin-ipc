@@ -1920,7 +1920,6 @@ static void test_dispatch_string_reverse_small_buffer(void) {
     size_t resp_len = 0;
 
     /* Encode a simple string reverse request */
-    nipc_string_reverse_view_t view = {.str = "test", .str_len = 4};
     size_t req_len = nipc_string_reverse_encode("test", 4, req, sizeof(req));
     CHECK(req_len > 0, "string_reverse_encode for dispatch test");
 

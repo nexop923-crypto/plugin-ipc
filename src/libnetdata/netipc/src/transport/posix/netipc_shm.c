@@ -98,6 +98,18 @@ static bool dir_fd_allows_stale_unlink(int dir_fd)
     return (st.st_mode & (S_IWGRP | S_IWOTH)) == 0;
 }
 
+static int open_run_dir_fd(const char *run_dir)
+{
+    DIR *dir = opendir(run_dir);
+    if (!dir)
+        return -1;
+
+    int raw_fd = dirfd(dir);
+    int fd = raw_fd >= 0 ? fcntl(raw_fd, F_DUPFD_CLOEXEC, 0) : -1;
+    closedir(dir);
+    return fd;
+}
+
 /* Thin wrapper around the futex syscall. */
 static int futex_wake(uint32_t *addr, int count)
 {
@@ -282,7 +294,7 @@ nipc_shm_error_t nipc_shm_server_create(const char *run_dir,
     if (name_rc < 0)
         return NIPC_SHM_ERR_PATH_TOO_LONG;
 
-    int dir_fd = open(run_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    int dir_fd = open_run_dir_fd(run_dir);
     if (dir_fd < 0)
         return NIPC_SHM_ERR_OPEN;
 
@@ -444,7 +456,7 @@ nipc_shm_error_t nipc_shm_client_attach(const char *run_dir,
         return NIPC_SHM_ERR_PATH_TOO_LONG;
 
     /* Open the file. */
-    int dir_fd = open(run_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    int dir_fd = open_run_dir_fd(run_dir);
     if (dir_fd < 0)
         return NIPC_SHM_ERR_OPEN;
     int fd = openat(dir_fd, shm_name, O_RDWR | O_CLOEXEC);

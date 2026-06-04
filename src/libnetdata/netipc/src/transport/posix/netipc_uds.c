@@ -8,6 +8,7 @@
 #include "netipc/netipc_uds.h"
 #include "netipc/netipc_protocol.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdlib.h>
@@ -526,19 +527,25 @@ static int unlink_stale_socket_path(const char *run_dir,
     if (!allow_stale_unlink)
         return -1;
 
-    int dir_fd = open(run_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (dir_fd < 0)
+    DIR *dir = opendir(run_dir);
+    if (!dir)
         return -1;
+
+    int dir_fd = dirfd(dir);
+    if (dir_fd < 0) {
+        closedir(dir);
+        return -1;
+    }
 
     struct stat st;
     if (fstatat(dir_fd, socket_name, &st, AT_SYMLINK_NOFOLLOW) != 0) {
         int ret = (errno == ENOENT) ? 0 : -1;
-        close(dir_fd);
+        closedir(dir);
         return ret;
     }
 
     if (!S_ISSOCK(st.st_mode)) {
-        close(dir_fd);
+        closedir(dir);
         return -1;
     }
 
@@ -546,7 +553,7 @@ static int unlink_stale_socket_path(const char *run_dir,
     if (unlinkat(dir_fd, socket_name, 0) == 0 || errno == ENOENT)
         ret = 0;
 
-    close(dir_fd);
+    closedir(dir);
     return ret;
 }
 

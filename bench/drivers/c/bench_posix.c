@@ -346,16 +346,22 @@ static int run_server(const char *run_dir, const char *service,
         .backlog                   = 4,
     };
 
-    nipc_managed_server_t server;
-    nipc_error_t err = nipc_server_init(&server, run_dir, service, &scfg,
+    nipc_managed_server_t *server = calloc(1, sizeof(*server));
+    if (!server) {
+        fprintf(stderr, "server allocation failed\n");
+        return 1;
+    }
+
+    nipc_error_t err = nipc_server_init(server, run_dir, service, &scfg,
                                         1, expected_method_code,
                                         handler, NULL);
     if (err != NIPC_OK) {
         fprintf(stderr, "server init failed: %d\n", err);
+        free(server);
         return 1;
     }
 
-    g_server = &server;
+    g_server = server;
 
     /* Print READY, then print CPU when done */
     printf("READY\n");
@@ -375,7 +381,7 @@ static int run_server(const char *run_dir, const char *service,
         if (!duration_arg) {
             fprintf(stderr, "timer duration allocation failed\n");
             timer_failed = 1;
-            nipc_server_stop(&server);
+            nipc_server_stop(server);
         } else {
             *duration_arg = duration_sec;
             int rc = pthread_create(&timer_tid, NULL, timer_thread, duration_arg);
@@ -383,13 +389,13 @@ static int run_server(const char *run_dir, const char *service,
                 free(duration_arg);
                 fprintf(stderr, "timer thread create failed: %s\n", strerror(rc));
                 timer_failed = 1;
-                nipc_server_stop(&server);
+                nipc_server_stop(server);
             }
         }
     }
 
     /* Blocking: runs until nipc_server_stop() is called */
-    nipc_server_run(&server);
+    nipc_server_run(server);
 
     if (timer_tid)
         stop_timer_thread(timer_tid);
@@ -402,7 +408,8 @@ static int run_server(const char *run_dir, const char *service,
     fflush(stdout);
 
     g_server = NULL;
-    nipc_server_destroy(&server);
+    nipc_server_destroy(server);
+    free(server);
     return timer_failed ? 1 : 0;
 }
 
@@ -433,16 +440,22 @@ static int run_server_batch(const char *run_dir, const char *service,
         .backlog                   = 4,
     };
 
-    nipc_managed_server_t server;
-    nipc_error_t err = nipc_server_init(&server, run_dir, service, &scfg,
+    nipc_managed_server_t *server = calloc(1, sizeof(*server));
+    if (!server) {
+        fprintf(stderr, "batch server allocation failed\n");
+        return 1;
+    }
+
+    nipc_error_t err = nipc_server_init(server, run_dir, service, &scfg,
                                         4, expected_method_code,
                                         handler, NULL);
     if (err != NIPC_OK) {
         fprintf(stderr, "batch server init failed: %d\n", err);
+        free(server);
         return 1;
     }
 
-    g_server = &server;
+    g_server = server;
 
     printf("READY\n");
     fflush(stdout);
@@ -459,7 +472,7 @@ static int run_server_batch(const char *run_dir, const char *service,
         if (!duration_arg) {
             fprintf(stderr, "batch timer duration allocation failed\n");
             timer_failed = 1;
-            nipc_server_stop(&server);
+            nipc_server_stop(server);
         } else {
             *duration_arg = duration_sec;
             int rc = pthread_create(&timer_tid, NULL, timer_thread, duration_arg);
@@ -467,12 +480,12 @@ static int run_server_batch(const char *run_dir, const char *service,
                 free(duration_arg);
                 fprintf(stderr, "batch timer thread create failed: %s\n", strerror(rc));
                 timer_failed = 1;
-                nipc_server_stop(&server);
+                nipc_server_stop(server);
             }
         }
     }
 
-    nipc_server_run(&server);
+    nipc_server_run(server);
 
     if (timer_tid)
         stop_timer_thread(timer_tid);
@@ -484,7 +497,8 @@ static int run_server_batch(const char *run_dir, const char *service,
     fflush(stdout);
 
     g_server = NULL;
-    nipc_server_destroy(&server);
+    nipc_server_destroy(server);
+    free(server);
     return timer_failed ? 1 : 0;
 }
 

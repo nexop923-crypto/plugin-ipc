@@ -2,6 +2,8 @@
 #define NIPC_TEST_INTEROP_PATH_H
 
 #include <limits.h>
+#include <dirent.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -67,6 +69,27 @@ static int nipc_test_resolve_run_dir(const char *input,
 
     memcpy(resolved, input, n);
     return 0;
+}
+
+static int nipc_test_open_run_dir(const char *input,
+                                  char *resolved,
+                                  size_t resolved_len)
+{
+    if (nipc_test_resolve_run_dir(input, resolved, resolved_len) != 0)
+        return -1;
+
+    DIR *dir = opendir(resolved);
+    if (!dir) {
+        fprintf(stderr, "cannot open run directory: %s\n", resolved);
+        return -1;
+    }
+
+    int raw_fd = dirfd(dir);
+    int fd = raw_fd >= 0 ? fcntl(raw_fd, F_DUPFD_CLOEXEC, 0) : -1;
+    closedir(dir);
+    if (fd < 0)
+        fprintf(stderr, "cannot duplicate run directory fd: %s\n", resolved);
+    return fd;
 }
 
 #endif

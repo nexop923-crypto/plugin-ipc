@@ -194,7 +194,7 @@ static void test_snapshot_ping_pong(void)
     for (int round = 0; round < 10; round++) {
         nipc_cgroups_resp_view_t view;
         nipc_cgroups_item_view_t item0;
-        uint32_t expected_generation = (uint32_t)(round + 1);
+        uint64_t expected_generation = (uint64_t)(round + 1);
         uint32_t expected_items = 1u + (round % 4u);
         nipc_error_t err = nipc_client_call_cgroups_snapshot(&client, &view);
 
@@ -206,7 +206,7 @@ static void test_snapshot_ping_pong(void)
         responses_received++;
 
         if (view.generation != expected_generation) {
-            printf("  FAIL: round %d: generation %" PRIu32 " != expected %" PRIu32 "\n",
+            printf("  FAIL: round %d: generation %" PRIu64 " != expected %" PRIu64 "\n",
                    round, view.generation, expected_generation);
             all_ok = false;
             break;

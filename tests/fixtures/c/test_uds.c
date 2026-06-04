@@ -148,6 +148,97 @@ typedef struct {
     int done;
 } raw_response_server_ctx_t;
 
+static void send_short_continuation_response(int fd, uint32_t packet_size,
+                                             const nipc_header_t *request)
+{
+    uint8_t payload_buf[160];
+    memset(payload_buf, 0xAB, sizeof(payload_buf));
+    size_t first_payload = (size_t)packet_size - NIPC_HEADER_LEN;
+    if (first_payload > sizeof(payload_buf))
+        first_payload = sizeof(payload_buf);
+
+    uint8_t hdr_buf[NIPC_HEADER_LEN];
+    nipc_header_t resp = {
+        .magic = NIPC_MAGIC_MSG,
+        .version = NIPC_VERSION,
+        .header_len = NIPC_HEADER_LEN,
+        .kind = NIPC_KIND_RESPONSE,
+        .code = request->code,
+        .message_id = request->message_id,
+        .item_count = 1,
+        .transport_status = NIPC_STATUS_OK,
+        .payload_len = sizeof(payload_buf),
+    };
+    nipc_header_encode(&resp, hdr_buf, sizeof(hdr_buf));
+
+    struct iovec iov[2];
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    iov[0].iov_base = hdr_buf;
+    iov[0].iov_len = sizeof(hdr_buf);
+    iov[1].iov_base = payload_buf;
+    iov[1].iov_len = first_payload;
+    msg.msg_iov = iov;
+    msg.msg_iovlen = 2;
+    sendmsg(fd, &msg, MSG_NOSIGNAL);
+
+    uint8_t short_chunk[8] = {0};
+    send(fd, short_chunk, sizeof(short_chunk), MSG_NOSIGNAL);
+}
+
+static void send_bad_or_missing_continuation_response(int fd,
+                                                      uint32_t packet_size,
+                                                      const nipc_header_t *request,
+                                                      int send_bad_header)
+{
+    uint8_t payload_buf[160];
+    memset(payload_buf, 0xBC, sizeof(payload_buf));
+    size_t first_payload = (size_t)packet_size - NIPC_HEADER_LEN;
+    if (first_payload > sizeof(payload_buf))
+        first_payload = sizeof(payload_buf);
+
+    uint8_t hdr_buf[NIPC_HEADER_LEN];
+    nipc_header_t resp = {
+        .magic = NIPC_MAGIC_MSG,
+        .version = NIPC_VERSION,
+        .header_len = NIPC_HEADER_LEN,
+        .kind = NIPC_KIND_RESPONSE,
+        .code = request->code,
+        .message_id = request->message_id,
+        .item_count = 1,
+        .transport_status = NIPC_STATUS_OK,
+        .payload_len = sizeof(payload_buf),
+    };
+    nipc_header_encode(&resp, hdr_buf, sizeof(hdr_buf));
+
+    struct iovec iov[2];
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    iov[0].iov_base = hdr_buf;
+    iov[0].iov_len = sizeof(hdr_buf);
+    iov[1].iov_base = payload_buf;
+    iov[1].iov_len = first_payload;
+    msg.msg_iov = iov;
+    msg.msg_iovlen = 2;
+    sendmsg(fd, &msg, MSG_NOSIGNAL);
+
+    if (send_bad_header) {
+        uint8_t chunk_buf[NIPC_HEADER_LEN] = {0};
+        nipc_chunk_header_t chk = {
+            .magic = NIPC_MAGIC_MSG,
+            .version = NIPC_VERSION,
+            .flags = 0,
+            .message_id = request->message_id,
+            .total_message_len = (uint32_t)(NIPC_HEADER_LEN + sizeof(payload_buf)),
+            .chunk_index = 1,
+            .chunk_count = 2,
+            .chunk_payload_len = 64,
+        };
+        nipc_chunk_header_encode(&chk, chunk_buf, sizeof(chunk_buf));
+        send(fd, chunk_buf, sizeof(chunk_buf), MSG_NOSIGNAL);
+    }
+}
+
 /* Simple echo server: accepts clients, for each one reads echo_count
  * messages and sends them back with kind=RESPONSE. */
 static void *echo_server_thread(void *arg)
@@ -442,38 +533,7 @@ static void *raw_response_server_thread(void *arg)
                 break;
             }
             case RAW_RESP_SHORT_CONTINUATION: {
-                uint8_t payload_buf[160];
-                memset(payload_buf, 0xAB, sizeof(payload_buf));
-                size_t first_payload = (size_t)session.packet_size - NIPC_HEADER_LEN;
-                if (first_payload > sizeof(payload_buf))
-                    first_payload = sizeof(payload_buf);
-                uint8_t hdr_buf[NIPC_HEADER_LEN];
-                nipc_header_t resp = {
-                    .magic = NIPC_MAGIC_MSG,
-                    .version = NIPC_VERSION,
-                    .header_len = NIPC_HEADER_LEN,
-                    .kind = NIPC_KIND_RESPONSE,
-                    .code = hdr.code,
-                    .message_id = hdr.message_id,
-                    .item_count = 1,
-                    .transport_status = NIPC_STATUS_OK,
-                    .payload_len = sizeof(payload_buf),
-                };
-                nipc_header_encode(&resp, hdr_buf, sizeof(hdr_buf));
-
-                struct iovec iov[2];
-                struct msghdr msg;
-                memset(&msg, 0, sizeof(msg));
-                iov[0].iov_base = hdr_buf;
-                iov[0].iov_len = sizeof(hdr_buf);
-                iov[1].iov_base = payload_buf;
-                iov[1].iov_len = first_payload;
-                msg.msg_iov = iov;
-                msg.msg_iovlen = 2;
-                sendmsg(session.fd, &msg, MSG_NOSIGNAL);
-
-                uint8_t short_chunk[8] = {0};
-                send(session.fd, short_chunk, sizeof(short_chunk), MSG_NOSIGNAL);
+                send_short_continuation_response(session.fd, session.packet_size, &hdr);
                 break;
             }
             case RAW_RESP_PAYLOAD_EXCEEDED: {
@@ -514,51 +574,9 @@ static void *raw_response_server_thread(void *arg)
             }
             case RAW_RESP_BAD_CONTINUATION_HEADER:
             case RAW_RESP_MISSING_CONTINUATION: {
-                uint8_t payload_buf[160];
-                memset(payload_buf, 0xBC, sizeof(payload_buf));
-                size_t first_payload = (size_t)session.packet_size - NIPC_HEADER_LEN;
-                if (first_payload > sizeof(payload_buf))
-                    first_payload = sizeof(payload_buf);
-                uint8_t hdr_buf[NIPC_HEADER_LEN];
-                nipc_header_t resp = {
-                    .magic = NIPC_MAGIC_MSG,
-                    .version = NIPC_VERSION,
-                    .header_len = NIPC_HEADER_LEN,
-                    .kind = NIPC_KIND_RESPONSE,
-                    .code = hdr.code,
-                    .message_id = hdr.message_id,
-                    .item_count = 1,
-                    .transport_status = NIPC_STATUS_OK,
-                    .payload_len = sizeof(payload_buf),
-                };
-                nipc_header_encode(&resp, hdr_buf, sizeof(hdr_buf));
-
-                struct iovec iov[2];
-                struct msghdr msg;
-                memset(&msg, 0, sizeof(msg));
-                iov[0].iov_base = hdr_buf;
-                iov[0].iov_len = sizeof(hdr_buf);
-                iov[1].iov_base = payload_buf;
-                iov[1].iov_len = first_payload;
-                msg.msg_iov = iov;
-                msg.msg_iovlen = 2;
-                sendmsg(session.fd, &msg, MSG_NOSIGNAL);
-
-                if (ctx->mode == RAW_RESP_BAD_CONTINUATION_HEADER) {
-                    uint8_t chunk_buf[NIPC_HEADER_LEN] = {0};
-                    nipc_chunk_header_t chk = {
-                        .magic = NIPC_MAGIC_MSG,
-                        .version = NIPC_VERSION,
-                        .flags = 0,
-                        .message_id = hdr.message_id,
-                        .total_message_len = (uint32_t)(NIPC_HEADER_LEN + sizeof(payload_buf)),
-                        .chunk_index = 1,
-                        .chunk_count = 2,
-                        .chunk_payload_len = 64,
-                    };
-                    nipc_chunk_header_encode(&chk, chunk_buf, sizeof(chunk_buf));
-                    send(session.fd, chunk_buf, sizeof(chunk_buf), MSG_NOSIGNAL);
-                }
+                send_bad_or_missing_continuation_response(
+                    session.fd, session.packet_size, &hdr,
+                    ctx->mode == RAW_RESP_BAD_CONTINUATION_HEADER);
                 break;
             }
             }

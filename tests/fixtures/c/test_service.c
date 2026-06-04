@@ -2073,7 +2073,6 @@ static void test_shm_client_rejects_malformed_responses(void)
             .auth_token = AUTH_TOKEN,
         };
         nipc_client_ctx_t client;
-        uint64_t value_out = 0;
         char msg[160];
 
         cleanup_all(cases[i].service);
@@ -2151,7 +2150,6 @@ static void test_shm_server_rejects_malformed_requests(void)
         };
         nipc_client_ctx_t bad_client;
         nipc_client_ctx_t good_client;
-        uint64_t increment_out = 0;
         char msg[160];
 
         cleanup_all(cases[i].service);
