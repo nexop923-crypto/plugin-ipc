@@ -37,6 +37,10 @@ endif()
 
 add_library(netipc_protocol STATIC
     src/libnetdata/netipc/src/protocol/netipc_protocol.c
+    src/libnetdata/netipc/src/protocol/netipc_protocol_cgroups.c
+    src/libnetdata/netipc/src/protocol/netipc_protocol_lookup_common.c
+    src/libnetdata/netipc/src/protocol/netipc_protocol_cgroups_lookup.c
+    src/libnetdata/netipc/src/protocol/netipc_protocol_apps_lookup.c
 )
 target_include_directories(netipc_protocol PUBLIC
     src/libnetdata/netipc/include

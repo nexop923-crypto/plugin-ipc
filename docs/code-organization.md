@@ -81,6 +81,21 @@ Codec modules contain:
 - Response builders
 - Copy/materialize helpers
 
+Each service-kind codec must have its own implementation file in each
+language. Shared wire helpers, directory parsing, label-table handling,
+alignment helpers, and other reusable codec infrastructure may live in
+common files, but custom request/response code for one codec must not be
+mixed with custom request/response code for another codec.
+
+Examples:
+
+- `increment` codec code lives in increment-specific files.
+- `string_reverse` codec code lives in string-reverse-specific files.
+- `cgroups_snapshot` codec code lives in cgroups-snapshot-specific files.
+- `cgroups_lookup` codec code lives in cgroups-lookup-specific files.
+- `apps_lookup` codec code lives in apps-lookup-specific files.
+- shared lookup label/layout helpers live in lookup-common files.
+
 Codec modules must NOT contain:
 
 - Any transport or I/O code
@@ -222,6 +237,8 @@ policy, connection management, and typed dispatch remain consistent.
 Transport and protocol modules must not grow into monolithic files that
 mix multiple concerns. Guidelines:
 
+- Keep one service-kind codec API per implementation file in C, Rust,
+  and Go.
 - Separate client and server types into different files where the
   language supports it.
 - Separate SHM transport from baseline transport into distinct files.

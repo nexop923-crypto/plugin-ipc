@@ -306,6 +306,87 @@ Decision update on 2026-06-04, C service common target:
 - Target a private service-common module for platform-neutral L2/L3 logic; do not merge the POSIX and Windows session loops.
 - Preserve platform-specific transport, SHM, wait, cancel, close, wakeup, and thread behavior.
 
+Decision update on 2026-06-04, C protocol file-level complexity target:
+
+- The user clarified that maintainability cleanup should focus on one file at a time, not batching many language/files together.
+- Proceed with `src/libnetdata/netipc/src/protocol/netipc_protocol.c` only.
+- Goal: reduce file-level complexity by splitting the C protocol implementation by single-purpose protocol family while preserving the public C header/API and wire behavior.
+- Preferred approach: move existing code mostly unchanged into private implementation files and a private internal header instead of rewriting algorithms.
+- Avoid broad cross-language changes, protocol behavior changes, public header changes, and speculative refactors.
+
+Decision update on 2026-06-04, codec-per-file architecture:
+
+- The user strongly agreed that each service-kind codec API should have its own file in C, Rust, and Go because the SDK is expected to grow to dozens of codecs.
+- Shared helpers may exist in common files, but custom request/response code for one codec must not be mixed with custom request/response code for another codec.
+- Record this as a project architecture rule in `docs/code-organization.md`.
+- Continue the current C protocol split by separating the mixed lookup implementation into common lookup helpers, cgroups lookup codec code, and apps lookup codec code.
+- Do not batch Rust and Go in the same implementation pass; treat them as later one-language-at-a-time follow-ups after the C shape validates.
+
+### Target Gate - C Protocol File Split
+
+Problem / root-cause model:
+
+- `src/libnetdata/netipc/src/protocol/netipc_protocol.c` is a 2448-line translation unit containing layout assertions, L1 envelope helpers, batch helpers, cgroups snapshot codecs, lookup codecs/builders, simple demo codecs, and typed dispatch helpers.
+- Current Lizard evidence after previous cleanup: 1973 NLOC, 81 functions, average CCN 5.5, no function above the Codacy-managed CCN 20 threshold.
+- Working theory: the remaining Codacy file-level complexity pressure is caused by many separate protocol goals concentrated in one file, not by a single function that needs algorithmic rewriting.
+
+Evidence reviewed:
+
+- `src/libnetdata/netipc/src/protocol/netipc_protocol.c:1` whole file.
+- `CMakeLists.txt:38` builds `netipc_protocol` from a single source file.
+- Highest remaining C functions in the file are below CCN 20: `apps_lookup_validate_known`, `lookup_validate_labels`, and `apps_lookup_decode_item_bytes`.
+- `tests/interop_codec.sh` validates byte-identical C/Rust/Go protocol fixture generation and decode paths.
+
+Affected contracts and surfaces:
+
+- Private C implementation files under `src/libnetdata/netipc/src/protocol/`.
+- `CMakeLists.txt` source list for the `netipc_protocol` static library.
+- Public `src/libnetdata/netipc/include/netipc/netipc_protocol.h` must remain unchanged.
+- Public exported symbols and wire bytes must remain unchanged.
+
+Existing patterns to reuse:
+
+- Keep one public protocol library target named `netipc_protocol`.
+- Keep private implementation details under `src/libnetdata/netipc/src/protocol/`.
+- Keep static layout assertions and exact wire-size guarantees.
+- Keep C11, no generated code, no new repo dependency.
+
+Risk and blast radius:
+
+- Low to medium. The intended change is mostly source movement, but splitting static helpers can create link errors or subtle duplicate/private-definition mistakes.
+- Main behavioral risks are missing a static helper, accidentally changing helper linkage, omitting a source file from CMake, or changing compile-time layout assertions.
+
+Sensitive data handling plan:
+
+- Do not read `.env`.
+- Do not write secrets, credentials, tokens, customer data, personal data, private endpoints, or proprietary details into code, docs, skills, specs, or SOW artifacts.
+
+Implementation plan:
+
+1. Add a private protocol internal header for shared private wire structs and small shared helpers.
+2. Keep core envelope, batch, hello, simple demo codecs, typed dispatch helpers, and layout assertions in `netipc_protocol.c`.
+3. Move cgroups snapshot codec/builder code to a private `netipc_protocol_cgroups.c`.
+4. Move cgroups/apps lookup request/response helpers and builders to a private `netipc_protocol_lookup.c`.
+5. Update `CMakeLists.txt` so `netipc_protocol` links all protocol implementation files.
+
+Validation plan:
+
+- `cmake --build build --target netipc_protocol test_protocol interop_codec_c fuzz_protocol`.
+- `/usr/bin/ctest --test-dir build --output-on-failure -R protocol`.
+- `bash tests/interop_codec.sh` serially after the build/protocol test.
+- Codacy-managed Lizard on the split C protocol files.
+- `codacy-analysis analyze --output-format json`.
+- `git diff --check`, SOW audit, and sensitive-data scan on touched durable artifacts.
+
+Artifact impact plan:
+
+- `AGENTS.md`: no workflow or guardrail change expected.
+- Runtime project skills: no reusable workflow change expected.
+- Specs: no public protocol or API behavior change expected; update only if validation reveals a contract discrepancy.
+- End-user/operator docs: no public usage change expected.
+- End-user/operator skills: no exported/operator workflow change expected.
+- SOW lifecycle: record this target and keep the SOW in progress pending metric re-check.
+
 ### Target Gate - C Service Common Extraction
 
 Problem / root-cause model:
@@ -1020,6 +1101,54 @@ Raw cache, Go typed-facade, apps lookup builder, cgroups lookup builder, apps lo
   - `gh api '/repos/netdata/plugin-ipc/code-scanning/alerts?state=open&branch=main&per_page=100'` returned an empty list after C/C++ POSIX CodeQL uploaded results.
   - The only remaining CodeQL alert after source fixes was `7633`, `cpp/stack-address-escape`, at `src/libnetdata/netipc/src/service/netipc_service.c:1484`.
   - Alert `7633` was dismissed as `false positive` with this evidence: `docs/getting-started.md:191` documents stack-owned `nipc_managed_server_t` usage, and `src/libnetdata/netipc/src/service/netipc_service.c:1603` begins `nipc_server_destroy()`, which joins all session threads before the caller may release the server object.
+
+### 2026-06-04 C Protocol File Split
+
+- The user approved trying a one-file-at-a-time complexity approach on `src/libnetdata/netipc/src/protocol/netipc_protocol.c`.
+- Implemented a C-only source split with no public header/API changes:
+  - kept core envelope, batch, hello, increment, string-reverse, dispatch helpers, and layout assertions in `src/libnetdata/netipc/src/protocol/netipc_protocol.c`.
+  - added private shared wire definitions and `mul_would_overflow()` in `src/libnetdata/netipc/src/protocol/netipc_protocol_internal.h`.
+  - moved cgroups snapshot request/response/builder implementation to `src/libnetdata/netipc/src/protocol/netipc_protocol_cgroups.c`.
+  - added shared lookup label/layout helper declarations and implementation in `src/libnetdata/netipc/src/protocol/netipc_protocol_lookup_common.h` and `src/libnetdata/netipc/src/protocol/netipc_protocol_lookup_common.c`.
+  - moved cgroups-lookup request/response/builder implementation to `src/libnetdata/netipc/src/protocol/netipc_protocol_cgroups_lookup.c`.
+  - moved apps-lookup request/response/builder implementation to `src/libnetdata/netipc/src/protocol/netipc_protocol_apps_lookup.c`.
+  - updated `CMakeLists.txt` so the `netipc_protocol` static library links all protocol implementation files.
+  - updated `docs/code-organization.md` with the architecture rule that each service-kind codec API must have its own file in C, Rust, and Go; shared helpers may live in common files.
+- Size result:
+  - before: `netipc_protocol.c` had 2448 lines and Lizard reported 1973 NLOC, 81 functions, average CCN 5.5.
+  - after:
+    - `netipc_protocol.c`: 650 lines, 479 NLOC.
+    - `netipc_protocol_cgroups.c`: 324 lines, 228 NLOC.
+    - `netipc_protocol_lookup_common.c`: 377 lines, 319 NLOC.
+    - `netipc_protocol_lookup_common.h`: 90 lines.
+    - `netipc_protocol_cgroups_lookup.c`: 408 lines, 344 NLOC.
+    - `netipc_protocol_apps_lookup.c`: 489 lines, 421 NLOC.
+  - Codacy-managed Lizard on the split C protocol implementation reported:
+    - no function exceeded CCN 20 across the split protocol implementation files.
+- Validation:
+  - `cmake --build build --target netipc_protocol test_protocol interop_codec_c fuzz_protocol` passed.
+  - `/usr/bin/ctest --test-dir build --output-on-failure -R protocol` passed: 4/4 protocol tests.
+  - `bash tests/interop_codec.sh` passed:
+    - Rust decoded C output: 89 passed, 0 failed.
+    - Go decoded C output: 90 passed, 0 failed.
+    - C decoded Rust output: 101 passed, 0 failed.
+    - Go decoded Rust output: 90 passed, 0 failed.
+    - C decoded Go output: 101 passed, 0 failed.
+    - Rust decoded Go output: 89 passed, 0 failed.
+    - C, Rust, and Go generated byte-identical protocol fixture files.
+  - `cmake --build build` passed for the full local build.
+  - `/usr/bin/ctest --test-dir build --output-on-failure` passed: 46/46 tests.
+  - `codacy-analysis analyze --output-format json` passed with 0 issues and 0 errors across Checkov, Opengrep/Semgrep, Trivy, cppcheck, ShellCheck, and Spectral.
+  - `git diff --check` passed.
+  - `bash .agents/sow/audit.sh` passed and reported SOW initialization complete and clean.
+  - Sensitive-data scan across touched durable artifacts returned no matches.
+- Artifact impact:
+  - `AGENTS.md`: no workflow or guardrail change.
+  - Runtime project skills: no reusable workflow change.
+  - Specs: no update needed because public protocol/API behavior and wire bytes are unchanged.
+  - End-user/operator docs: no update needed because public usage is unchanged.
+  - End-user/operator skills: no update needed because exported/operator workflow is unchanged.
+  - SOW lifecycle: target remains part of active `SOW-0014`; SOW remains in progress pending metric re-check and next selected hotspot.
 
 ## Lessons Extracted
 
