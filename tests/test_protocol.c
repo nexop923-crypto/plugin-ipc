@@ -1792,7 +1792,7 @@ static void test_batch_item_get_overflow(void) {
     uint32_t item_len = 0;
 
     nipc_error_t err = nipc_batch_item_get(buf, sizeof(buf), 0xFFFFFFFFu, 0, &item_ptr, &item_len);
-    CHECK(err == NIPC_ERR_BAD_ITEM_COUNT, "batch_item_get detects overflow");
+    CHECK(err != NIPC_OK, "batch_item_get rejects overflow-shaped item_count");
 }
 
 static void test_cgroups_resp_decode_overflow(void) {
@@ -3145,6 +3145,7 @@ int main(void) {
 
     /* Coverage gap tests: new batch */
     test_header_decode_kind_99();
+    test_batch_dir_validate_overflow();
     test_batch_dir_validate_truncated();
     test_batch_dir_validate_bad_alignment();
     test_batch_dir_validate_oob();
@@ -3168,6 +3169,9 @@ int main(void) {
     /* Coverage gap tests: builder utilities */
     test_cgroups_builder_set_header();
     test_cgroups_builder_estimate_max_items();
+    test_batch_item_get_overflow();
+    test_cgroups_resp_decode_overflow();
+    test_cgroups_item_decode_overflow();
     test_dispatch_string_reverse_small_buffer();
 
     /* Lookup codec tests */

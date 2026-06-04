@@ -9,6 +9,7 @@
 #include "netipc/netipc_service.h"
 #include "netipc/netipc_protocol.h"
 
+#include <inttypes.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -205,7 +206,7 @@ static void test_snapshot_ping_pong(void)
         responses_received++;
 
         if (view.generation != expected_generation) {
-            printf("  FAIL: round %d: generation %u != expected %u\n",
+            printf("  FAIL: round %d: generation %" PRIu32 " != expected %" PRIu32 "\n",
                    round, view.generation, expected_generation);
             all_ok = false;
             break;

@@ -968,6 +968,8 @@ endif()
 if(NOT NETIPC_WINDOWS_RUNTIME AND NOT APPLE)
     # C benchmark binary
     add_executable(bench_posix_c bench/drivers/c/bench_posix.c)
+    target_include_directories(bench_posix_c PRIVATE
+        "${CMAKE_SOURCE_DIR}/tests/fixtures/c")
     target_link_libraries(bench_posix_c PRIVATE
         netipc_service netipc_shm netipc_uds netipc_protocol Threads::Threads m
     )

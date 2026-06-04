@@ -620,8 +620,6 @@ static void test_cgroups_call(void)
     check("client is READY", nipc_client_ready(&client));
 
     /* Make a typed call */
-    uint8_t req_buf[64];
-    uint8_t resp_buf[RESPONSE_BUF_SIZE];
     nipc_cgroups_resp_view_t view;
 
     nipc_error_t err = nipc_client_call_cgroups_snapshot(&client, &view);
@@ -1261,8 +1259,6 @@ static void test_retry_on_failure(void)
     check("client ready (1st connect)", nipc_client_ready(&client));
 
     /* First call succeeds */
-    uint8_t req_buf[64];
-    uint8_t resp_buf[RESPONSE_BUF_SIZE];
     nipc_cgroups_resp_view_t view;
 
     nipc_error_t err = nipc_client_call_cgroups_snapshot(&client, &view);
@@ -1324,7 +1320,6 @@ static void test_multiple_clients(void)
     check("client 1 ready", nipc_client_ready(&client1));
 
     /* Make a call from client 1 */
-    uint8_t req_buf1[64], resp_buf1[RESPONSE_BUF_SIZE];
     nipc_cgroups_resp_view_t view1;
     nipc_error_t err1 = nipc_client_call_cgroups_snapshot(&client1, &view1);
     check("client 1 call ok", err1 == NIPC_OK);
@@ -1343,7 +1338,6 @@ static void test_multiple_clients(void)
     check("client 2 ready", nipc_client_ready(&client2));
 
     /* Make a call from client 2 */
-    uint8_t req_buf2[64], resp_buf2[RESPONSE_BUF_SIZE];
     nipc_cgroups_resp_view_t view2;
     nipc_error_t err2 = nipc_client_call_cgroups_snapshot(&client2, &view2);
     check("client 2 call ok", err2 == NIPC_OK);
@@ -1382,7 +1376,6 @@ static void test_handler_failure(void)
     /* Make a call - handler fails, so we get an error.
      * The client will also attempt a retry (at-least-once) since
      * it was previously READY, but the handler will fail again. */
-    uint8_t req_buf[64], resp_buf[RESPONSE_BUF_SIZE];
     nipc_cgroups_resp_view_t view;
     nipc_error_t err = nipc_client_call_cgroups_snapshot(&client, &view);
     check("call fails when handler fails", err != NIPC_OK);
@@ -1429,7 +1422,6 @@ static void test_status_reporting(void)
 
     /* Make 3 successful calls */
     for (int i = 0; i < 3; i++) {
-        uint8_t req_buf[64], resp_buf[RESPONSE_BUF_SIZE];
         nipc_cgroups_resp_view_t view;
         nipc_error_t err = nipc_client_call_cgroups_snapshot(&client, &view);
         check("call succeeded", err == NIPC_OK);
@@ -1443,7 +1435,6 @@ static void test_status_reporting(void)
 
     /* Make a call to a non-ready client */
     nipc_client_close(&client);
-    uint8_t req_buf[64], resp_buf[RESPONSE_BUF_SIZE];
     nipc_cgroups_resp_view_t view;
     nipc_error_t err = nipc_client_call_cgroups_snapshot(&client, &view);
     check("call on disconnected fails", err != NIPC_OK);
@@ -1485,7 +1476,6 @@ static void *drain_client_fn(void *arg)
     if (nipc_client_ready(&client)) {
         /* Make a slow series of calls to be "in-flight" during drain */
         for (int i = 0; i < 5; i++) {
-            uint8_t req_buf[64], resp_buf[RESPONSE_BUF_SIZE];
             nipc_cgroups_resp_view_t view;
             nipc_error_t err = nipc_client_call_cgroups_snapshot(&client, &view);
             if (err == NIPC_OK)
@@ -1637,7 +1627,6 @@ static void test_non_request_terminates_session(void)
           nipc_client_ready(&verify_client));
 
     if (nipc_client_ready(&verify_client)) {
-        uint8_t vreq[64], vresp[RESPONSE_BUF_SIZE];
         nipc_cgroups_resp_view_t vview;
         nipc_error_t verr = nipc_client_call_cgroups_snapshot(&verify_client, &vview);
         check("normal call succeeds after bad client", verr == NIPC_OK);
@@ -2610,7 +2599,6 @@ static void test_client_broken_refresh(void)
     usleep(50000);
 
     /* Make a call - should fail and put client in BROKEN state */
-    uint8_t req_buf[64], resp_buf[RESPONSE_BUF_SIZE];
     nipc_cgroups_resp_view_t view;
     nipc_error_t err = nipc_client_call_cgroups_snapshot(&client, &view);
     check("call fails (server gone)", err != NIPC_OK);
@@ -3005,7 +2993,6 @@ static void test_client_call_disconnected(void)
     nipc_client_init(&client, TEST_RUN_DIR, svc, &ccfg);
 
     /* Client is DISCONNECTED, call should fail immediately */
-    uint8_t req_buf[64], resp_buf[RESPONSE_BUF_SIZE];
     nipc_cgroups_resp_view_t view;
     nipc_error_t err = nipc_client_call_cgroups_snapshot(&client, &view);
     check("call on DISCONNECTED fails", err == NIPC_ERR_NOT_READY);

@@ -11,12 +11,12 @@
 
 #include "netipc/netipc_uds.h"
 #include "netipc/netipc_protocol.h"
+#include "interop_path.h"
 
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 #define AUTH_TOKEN 0xDEADBEEFCAFEBABEull
@@ -331,11 +331,10 @@ int main(int argc, char **argv)
     }
 
     const char *mode = argv[1];
-    const char *run_dir = argv[2];
+    char run_dir[PATH_MAX];
+    if (nipc_test_resolve_run_dir(argv[2], run_dir, sizeof(run_dir)) != 0)
+        return 1;
     const char *service = argv[3];
-
-    /* Ensure run_dir exists */
-    mkdir(run_dir, 0700);
 
     if (strcmp(mode, "server") == 0) {
         return run_server(run_dir, service);

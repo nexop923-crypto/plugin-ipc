@@ -920,6 +920,55 @@ Raw cache, Go typed-facade, apps lookup builder, cgroups lookup builder, apps lo
   - `bash .agents/sow/audit.sh` passed.
   - `codacy-analysis analyze --output-format json` passed with 0 issues and 0 errors across Checkov, Opengrep/Semgrep, Trivy, cppcheck, ShellCheck, and Spectral.
 
+### 2026-06-04 Expanded CodeQL Findings
+
+- After commit `97557fd`, GitHub CodeQL reported 56 open code-scanning alerts, all from category `/language:c-cpp-posix`.
+- Evidence from GitHub code scanning:
+  - `cpp/path-injection`: 12 high alerts across POSIX SHM production transport, C interop fixtures, fuzz helper, and POSIX benchmark helper.
+  - `cpp/world-writable-file-creation`: 2 high alerts in C test/interop helpers.
+  - `cpp/wrong-type-format-argument`: 1 high alert in C ping-pong test output.
+  - `cpp/stack-address-escape`: 4 warning alerts across C POSIX service, payload-limit test, and benchmark helper.
+  - `cpp/unused-local-variable`: 31 note alerts in C tests and benchmark helper.
+  - `cpp/unused-static-function`: 5 note alerts in C protocol/SHM tests.
+  - `cpp/long-switch`: 1 note alert in C UDS fault-response test.
+- Root-cause model:
+  - The stronger C/C++ CodeQL build now compiles test, interop, fuzz, cache, stress, hardening, and benchmark C targets that were not extracted by the earlier default setup.
+  - Most alerts are newly visible pre-existing code patterns, not regressions introduced by the Windows CI workflow itself.
+  - Some alerts are real hygiene issues in test and benchmark code; at least two path findings and one stack-address warning touch production POSIX C code and need source review rather than dismissal.
+- Decision:
+  - Do not weaken CodeQL coverage or disable the rules by default.
+  - First fix source patterns that are real or cheaply made explicit.
+  - Use narrow suppression or workflow configuration only for remaining findings proven to be intentional test scaffolding after source review.
+- Risk:
+  - Production POSIX SHM path handling changes can affect SHM lifecycle, stale-file recovery, and interop tests.
+  - Stack-lifetime fixes around server/session code can affect thread and signal lifetime if handled mechanically.
+  - Removing stale test locals and wiring previously unused static tests is low risk but still needs CTest validation.
+- Validation plan:
+  - Build C targets locally with CMake.
+  - Run focused C protocol, POSIX UDS/SHM/service, fuzz, and benchmark target validation.
+  - Run action/static checks available locally.
+  - Push and verify GitHub CodeQL alerts close or reduce to only documented intentional findings.
+- Implemented:
+  - Removed stale typed-call request/response locals from C service, chaos, and benchmark tests.
+  - Wired dormant C protocol coverage tests into `test_protocol` and relaxed one overly-specific synthetic-overflow assertion to require rejection rather than a single error code.
+  - Removed an unused SHM test helper.
+  - Fixed portable `uint32_t` formatting in the C ping-pong test.
+  - Changed the C payload-limit test overflow fixture to use static storage instead of sharing a stack buffer with server handler state.
+  - Changed POSIX benchmark timer threads to receive heap-owned duration arguments instead of stack addresses.
+  - Changed POSIX SHM stale recovery and attach/create paths to open session files with `openat()` relative to a validated directory file descriptor and to unlink with `unlinkat()` where the directory identity matters.
+  - Added a C interop/benchmark run-directory helper requiring existing absolute non-symlink directories owned by the current user and not group/world writable.
+  - Removed C interop/benchmark helper-side `mkdir(run_dir)` calls; repo scripts already create the temporary run directories.
+  - Changed the C codec interop fixture writer to create files with explicit `0600` mode.
+  - Changed the standalone C fuzz harness to read bytes from stdin only and updated the extended fuzz script accordingly.
+  - Changed the UDS stale-recovery regular-file test fixture to use explicit `0600` file creation.
+- Local validation:
+  - `cmake --build build --target netipc_shm netipc_service test_protocol test_uds test_shm test_service test_service_payload_limits test_chaos test_ping_pong fuzz_protocol interop_codec_c interop_uds_c interop_shm_c interop_service_c interop_cache_c bench_posix_c` passed.
+  - `/usr/bin/ctest --test-dir build --output-on-failure -R '^(test_protocol|test_uds|test_shm|test_service|test_service_payload_limits|test_chaos|test_ping_pong|fuzz_protocol_30s|interop_codec|test_uds_interop|test_shm_interop|test_service_interop|test_cache_interop)$'` passed: 13/13 focused tests.
+  - `codacy-analysis analyze --output-format json` passed with 0 issues and 0 errors across Checkov, Opengrep/Semgrep, Trivy, cppcheck, ShellCheck, and Spectral.
+  - `git diff --check` passed.
+  - `bash .agents/sow/audit.sh` passed.
+  - Sensitive-data scan across the touched durable artifacts returned no matches.
+
 ## Lessons Extracted
 
 Pending.

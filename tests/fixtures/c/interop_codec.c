@@ -10,9 +10,12 @@
  */
 
 #include "netipc/netipc_protocol.h"
+#include "interop_path.h"
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -33,8 +36,14 @@ static int write_file(const char *dir, const char *name,
                        const void *data, size_t len) {
     char path[512];
     snprintf(path, sizeof(path), "%s/%s", dir, name);
-    FILE *f = fopen(path, "wb");
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        fprintf(stderr, "ERROR: cannot open %s for writing\n", path);
+        return 1;
+    }
+    FILE *f = fdopen(fd, "wb");
     if (!f) {
+        close(fd);
         fprintf(stderr, "ERROR: cannot open %s for writing\n", path);
         return 1;
     }
@@ -51,8 +60,14 @@ static size_t read_file(const char *dir, const char *name,
                          void *buf, size_t buf_len) {
     char path[512];
     snprintf(path, sizeof(path), "%s/%s", dir, name);
-    FILE *f = fopen(path, "rb");
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        fprintf(stderr, "ERROR: cannot open %s for reading\n", path);
+        return 0;
+    }
+    FILE *f = fdopen(fd, "rb");
     if (!f) {
+        close(fd);
         fprintf(stderr, "ERROR: cannot open %s for reading\n", path);
         return 0;
     }
@@ -606,10 +621,14 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    char run_dir[PATH_MAX];
+    if (nipc_test_resolve_run_dir(argv[2], run_dir, sizeof(run_dir)) != 0)
+        return 1;
+
     if (strcmp(argv[1], "encode") == 0)
-        return do_encode(argv[2]);
+        return do_encode(run_dir);
     else if (strcmp(argv[1], "decode") == 0)
-        return do_decode(argv[2]);
+        return do_decode(run_dir);
     else {
         fprintf(stderr, "Unknown command: %s\n", argv[1]);
         return 1;

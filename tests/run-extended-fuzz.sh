@@ -119,7 +119,7 @@ run_c_fuzz() {
 
     log "  Feeding 1MB random data to standalone fuzz harness..."
     dd if=/dev/urandom bs=1048576 count=1 of="$tmpdata" 2>/dev/null
-    if run "$FUZZ_BIN" "$tmpdata"; then
+    if run "$FUZZ_BIN" < "$tmpdata"; then
         pass "C fuzz harness (1MB random)"
     else
         fail "C fuzz harness (1MB random)"
@@ -131,7 +131,7 @@ run_c_fuzz() {
     local c_ok=0
     for i in $(seq 1 1000); do
         dd if=/dev/urandom bs=1024 count=1 of="$tmpdata" 2>/dev/null
-        if "$FUZZ_BIN" "$tmpdata" >/dev/null 2>&1; then
+        if "$FUZZ_BIN" < "$tmpdata" >/dev/null 2>&1; then
             c_ok=$((c_ok + 1))
         fi
     done

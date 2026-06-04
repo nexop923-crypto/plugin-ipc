@@ -27,6 +27,7 @@
 #include "netipc/netipc_protocol.h"
 #include "netipc/netipc_uds.h"
 #include "netipc/netipc_shm.h"
+#include "interop_path.h"
 
 #include <errno.h>
 #include <math.h>
@@ -313,7 +314,9 @@ static void sighandler(int sig)
 /* Timer thread: stops server after duration_sec */
 static void *timer_thread(void *arg)
 {
-    int duration_sec = *(int *)arg;
+    int *duration_arg = (int *)arg;
+    int duration_sec = *duration_arg;
+    free(duration_arg);
     sleep(duration_sec + 3);
     if (g_server)
         nipc_server_stop(g_server);
@@ -368,11 +371,20 @@ static int run_server(const char *run_dir, const char *service,
     pthread_t timer_tid = 0;
     int timer_failed = 0;
     if (duration_sec > 0) {
-        int rc = pthread_create(&timer_tid, NULL, timer_thread, &duration_sec);
-        if (rc != 0) {
-            fprintf(stderr, "timer thread create failed: %s\n", strerror(rc));
+        int *duration_arg = malloc(sizeof(*duration_arg));
+        if (!duration_arg) {
+            fprintf(stderr, "timer duration allocation failed\n");
             timer_failed = 1;
             nipc_server_stop(&server);
+        } else {
+            *duration_arg = duration_sec;
+            int rc = pthread_create(&timer_tid, NULL, timer_thread, duration_arg);
+            if (rc != 0) {
+                free(duration_arg);
+                fprintf(stderr, "timer thread create failed: %s\n", strerror(rc));
+                timer_failed = 1;
+                nipc_server_stop(&server);
+            }
         }
     }
 
@@ -443,11 +455,20 @@ static int run_server_batch(const char *run_dir, const char *service,
     pthread_t timer_tid = 0;
     int timer_failed = 0;
     if (duration_sec > 0) {
-        int rc = pthread_create(&timer_tid, NULL, timer_thread, &duration_sec);
-        if (rc != 0) {
-            fprintf(stderr, "batch timer thread create failed: %s\n", strerror(rc));
+        int *duration_arg = malloc(sizeof(*duration_arg));
+        if (!duration_arg) {
+            fprintf(stderr, "batch timer duration allocation failed\n");
             timer_failed = 1;
             nipc_server_stop(&server);
+        } else {
+            *duration_arg = duration_sec;
+            int rc = pthread_create(&timer_tid, NULL, timer_thread, duration_arg);
+            if (rc != 0) {
+                free(duration_arg);
+                fprintf(stderr, "batch timer thread create failed: %s\n", strerror(rc));
+                timer_failed = 1;
+                nipc_server_stop(&server);
+            }
         }
     }
 
@@ -924,9 +945,6 @@ static int run_snapshot_client(const char *run_dir, const char *service,
 
     uint64_t requests = 0;
     uint64_t errors = 0;
-    uint8_t req_buf[64];
-    uint8_t resp_buf[RESPONSE_BUF_SIZE];
-
     uint64_t cpu_start = cpu_ns();
     uint64_t wall_start = now_ns();
     uint64_t wall_end = wall_start + (uint64_t)duration_sec * 1000000000ull;
@@ -1362,11 +1380,11 @@ int main(int argc, char **argv)
             return 1;
         }
 
-        const char *run_dir = argv[2];
+        char run_dir[PATH_MAX];
+        if (nipc_test_resolve_run_dir(argv[2], run_dir, sizeof(run_dir)) != 0)
+            return 1;
         const char *service = argv[3];
         int duration = (argc >= 5) ? atoi(argv[4]) : DEFAULT_DURATION;
-
-        mkdir(run_dir, 0700);
 
         uint32_t profiles;
         uint16_t expected_method_code;
@@ -1403,7 +1421,9 @@ int main(int argc, char **argv)
             return 1;
         }
 
-        const char *run_dir = argv[2];
+        char run_dir[PATH_MAX];
+        if (nipc_test_resolve_run_dir(argv[2], run_dir, sizeof(run_dir)) != 0)
+            return 1;
         const char *service = argv[3];
         int duration = atoi(argv[4]);
         uint64_t target_rps = (uint64_t)strtoull(argv[5], NULL, 10);
@@ -1434,7 +1454,9 @@ int main(int argc, char **argv)
             return 1;
         }
 
-        const char *run_dir = argv[2];
+        char run_dir[PATH_MAX];
+        if (nipc_test_resolve_run_dir(argv[2], run_dir, sizeof(run_dir)) != 0)
+            return 1;
         const char *service = argv[3];
         int duration = atoi(argv[4]);
         uint64_t target_rps = (uint64_t)strtoull(argv[5], NULL, 10);
@@ -1464,11 +1486,11 @@ int main(int argc, char **argv)
             return 1;
         }
 
-        const char *run_dir = argv[2];
+        char run_dir[PATH_MAX];
+        if (nipc_test_resolve_run_dir(argv[2], run_dir, sizeof(run_dir)) != 0)
+            return 1;
         const char *service = argv[3];
         int duration = (argc >= 5) ? atoi(argv[4]) : DEFAULT_DURATION;
-
-        mkdir(run_dir, 0700);
 
         uint32_t profiles;
         if (strcmp(cmd, "uds-batch-ping-pong-server") == 0)
@@ -1490,7 +1512,9 @@ int main(int argc, char **argv)
             return 1;
         }
 
-        const char *run_dir = argv[2];
+        char run_dir[PATH_MAX];
+        if (nipc_test_resolve_run_dir(argv[2], run_dir, sizeof(run_dir)) != 0)
+            return 1;
         const char *service = argv[3];
         int duration = atoi(argv[4]);
         uint64_t target_rps = (uint64_t)strtoull(argv[5], NULL, 10);
@@ -1518,7 +1542,9 @@ int main(int argc, char **argv)
             return 1;
         }
 
-        const char *run_dir = argv[2];
+        char run_dir[PATH_MAX];
+        if (nipc_test_resolve_run_dir(argv[2], run_dir, sizeof(run_dir)) != 0)
+            return 1;
         const char *service = argv[3];
         int duration = atoi(argv[4]);
         uint64_t target_rps = (uint64_t)strtoull(argv[5], NULL, 10);
@@ -1685,7 +1711,9 @@ int main(int argc, char **argv)
             return 1;
         }
 
-        const char *run_dir = argv[2];
+        char run_dir[PATH_MAX];
+        if (nipc_test_resolve_run_dir(argv[2], run_dir, sizeof(run_dir)) != 0)
+            return 1;
         const char *service = argv[3];
         int duration = atoi(argv[4]);
         uint64_t target_rps = (uint64_t)strtoull(argv[5], NULL, 10);

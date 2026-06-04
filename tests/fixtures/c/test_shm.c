@@ -67,13 +67,6 @@ static void cleanup_socket(const char *service)
     unlink(path);
 }
 
-static void build_shm_test_path(char *path, size_t path_len,
-                                const char *service, uint64_t session_id)
-{
-    snprintf(path, path_len, "%s/%s-%016" PRIx64 ".ipcshm",
-             TEST_RUN_DIR, service, session_id);
-}
-
 static void cleanup_all(const char *service)
 {
     cleanup_shm(service);

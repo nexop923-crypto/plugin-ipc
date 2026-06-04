@@ -196,7 +196,7 @@ static void test_typed_dispatch_overflow_reconnect_guard(void)
 {
     printf("--- Typed dispatch overflow reconnect guard ---\n");
 
-    char large_path[1536];
+    static char large_path[1536];
     memset(large_path, 'x', sizeof(large_path) - 1);
     large_path[sizeof(large_path) - 1] = '\0';
     large_service_handler.user = large_path;

@@ -9,6 +9,7 @@
 #include "netipc/netipc_protocol.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
@@ -1078,12 +1079,13 @@ static void test_stale_recovery_does_not_unlink_regular_file(void)
     char path[256];
     snprintf(path, sizeof(path), "%s/%s.sock", TEST_RUN_DIR, svc);
 
-    FILE *f = fopen(path, "w");
-    if (f) {
-        fputs("not a socket\n", f);
-        fclose(f);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd >= 0) {
+        const char contents[] = "not a socket\n";
+        (void)write(fd, contents, sizeof(contents) - 1);
+        close(fd);
     }
-    check("regular file created at socket path", f != NULL);
+    check("regular file created at socket path", fd >= 0);
 
     nipc_uds_server_config_t scfg = default_server_config();
     nipc_uds_listener_t listener;

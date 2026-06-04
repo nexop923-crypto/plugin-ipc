@@ -300,33 +300,8 @@ int main(void) {
 
 #elif defined(FUZZ_STANDALONE)
 
-/* Standalone mode: read from stdin or files given as arguments. */
+/* Standalone mode: read fuzz bytes from stdin. */
 #include <stdio.h>
-
-static int fuzz_file(const char *path) {
-    FILE *f = fopen(path, "rb");
-    if (!f) {
-        fprintf(stderr, "cannot open: %s\n", path);
-        return 1;
-    }
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (sz <= 0 || sz > 65536) {
-        fclose(f);
-        return 0;
-    }
-    uint8_t *buf = malloc((size_t)sz);
-    if (!buf) {
-        fclose(f);
-        return 1;
-    }
-    size_t rd = fread(buf, 1, (size_t)sz, f);
-    fclose(f);
-    fuzz_one(buf, rd);
-    free(buf);
-    return 0;
-}
 
 static int fuzz_stdin(void) {
     uint8_t buf[65536];
@@ -343,15 +318,12 @@ static int fuzz_stdin(void) {
 }
 
 int main(int argc, char **argv) {
-    if (argc <= 1)
-        return fuzz_stdin();
-
-    for (int i = 1; i < argc; i++) {
-        int rc = fuzz_file(argv[i]);
-        if (rc != 0)
-            return rc;
+    if (argc > 1) {
+        fprintf(stderr, "Usage: %s < input-bytes\n", argv[0]);
+        return 1;
     }
-    return 0;
+
+    return fuzz_stdin();
 }
 
 #else
