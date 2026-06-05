@@ -300,8 +300,68 @@ Open decisions:
     - cppcheck: success, 51 files, 0 issues.
     - ShellCheck: success, 3 files, 0 issues.
     - Spectral: success, 11 files, 0 issues.
-    - Revive: partial, 90 files, 0 issues, 1 `findings is not iterable` invocation error.
+  - Revive: partial, 90 files, 0 issues, 1 `findings is not iterable` invocation error.
 - Note: plain `ctest` resolves to a broken user-local Python wrapper at `~/.local/bin/ctest`; system `/usr/bin/ctest` was used for validation.
+- Committed and pushed `50c16fa17e4aa4df0b5fb1211b4239f5d71ecc28`.
+- Remote validation for `50c16fa17e4aa4df0b5fb1211b4239f5d71ecc28`:
+  - GitHub Static Analysis: success.
+  - GitHub CodeQL: success.
+  - GitHub Codacy Local Analysis: success.
+  - GitHub Codacy Coverage: success.
+  - GitHub Runtime Safety: success.
+  - GitHub Supply Chain Security: success.
+  - Codacy push quality check: success.
+- Codacy Cloud analyzed `50c16fa17e4aa4df0b5fb1211b4239f5d71ecc28`:
+  - issues: 0.
+  - LOC: 41001.
+  - complex files: 29%.
+  - duplicated files: 27%.
+- POSIX UDS file-level Codacy result after the split:
+  - `src/libnetdata/netipc/src/transport/posix/netipc_uds_lifecycle.c`: complexity 70, duplication 96.
+  - `src/libnetdata/netipc/src/transport/posix/netipc_uds_handshake.c`: complexity 59, duplication 57.
+  - `src/libnetdata/netipc/src/transport/posix/netipc_uds_receive.c`: complexity 50, duplication 0.
+  - `src/libnetdata/netipc/src/transport/posix/netipc_uds_send.c`: complexity 42, duplication 12.
+  - `src/libnetdata/netipc/src/transport/posix/netipc_uds.c`: complexity 15, duplication 0.
+  - `src/libnetdata/netipc/src/transport/posix/netipc_uds_inflight.c`: complexity 12, duplication 31.
+- Top production complexity files after the POSIX UDS split:
+  - `src/go/pkg/netipc/transport/windows/pipe.go`: complexity 214, duplication 773.
+  - `src/go/pkg/netipc/transport/posix/uds.go`: complexity 182, duplication 745.
+  - `src/libnetdata/netipc/src/transport/posix/netipc_shm.c`: complexity 179, duplication 160.
+  - `src/go/pkg/netipc/protocol/apps_lookup.go`: complexity 148, duplication 175.
+  - `src/go/pkg/netipc/transport/posix/shm_linux.go`: complexity 147, duplication 39.
+- Selected `src/go/pkg/netipc/transport/windows/pipe.go` as the next file to read because it is now the top production complexity and duplication hotspot.
+- Read `src/go/pkg/netipc/transport/windows/pipe.go` in full and compared its function map with `src/go/pkg/netipc/transport/posix/uds.go`.
+- `pipe.go` mixes these responsibilities in one file:
+  - Win32 syscall wrappers and constants.
+  - pipe name derivation and service-name validation.
+  - role/config/session/listener types.
+  - client connection lifecycle.
+  - session wait/close behavior.
+  - send chunking.
+  - receive chunk reassembly and batch validation.
+  - listener accept/close behavior.
+  - client and server handshakes.
+- Selected low-risk implementation shape:
+  - keep package name, exported API, types, errors, and behavior unchanged.
+  - split the Windows named-pipe package by goal inside the same package.
+  - do not introduce a shared cross-platform abstraction yet; POSIX and Windows package boundaries make that higher risk.
+  - create separate files for session/client lifecycle, send, receive, listener, and handshake.
+- Implemented the Windows Named Pipe Go split:
+  - `pipe.go`: Win32 constants/syscall wrappers, pipe-name/service-name helpers, common low-level I/O, and shared utility helpers.
+  - `pipe_session.go`: role/config/session types, session wait/close behavior, and client connect lifecycle.
+  - `pipe_send.go`: outbound logical-message send and chunked-send flow.
+  - `pipe_receive.go`: receive path, inbound limit checks, response tracking, chunk reassembly, and batch payload validation.
+  - `pipe_listener.go`: listener lifecycle, accept/close behavior, and pipe instance creation.
+  - `pipe_handshake.go`: client/server HELLO negotiation, compatibility detection, rejection, and HELLO_ACK send.
+- Validation after the Windows Named Pipe Go split:
+  - `gofmt` on the touched Windows pipe files: passed.
+  - `git diff --check`: passed.
+  - `cd src/go && go test ./...`: passed.
+  - `cd src/go && GOOS=windows GOARCH=amd64 go test -c -o /tmp/netipc-transport-windows.test.exe ./pkg/netipc/transport/windows`: passed.
+  - `win11`, isolated validation copy, `cd src/go && MSYSTEM=MSYS go test ./pkg/netipc/transport/windows`: passed.
+  - `bash .agents/sow/audit.sh`: passed.
+  - `codacy-analysis analyze . --output-format json`: exit status 0, 0 issues, 1 known Revive adapter invocation error:
+    - Revive error: `Failed to run revive: findings is not iterable`.
 
 ## Validation
 
