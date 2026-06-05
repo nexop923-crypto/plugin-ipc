@@ -4,7 +4,7 @@
 
 Status: completed
 
-Sub-state: Windows Rust CI compile regression repaired and validated.
+Sub-state: residual Go quality findings repaired and CodeQL false-positive alert dismissed.
 
 ## Requirements
 
@@ -1587,3 +1587,57 @@ Artifact impact:
 - End-user/operator docs: no public docs change needed.
 - End-user/operator skills: no exported integration guidance change needed.
 - SOW lifecycle: this completed SOW was reopened from `done/` to `current/` for a true regression and will be completed again with the repair commit.
+
+## Regression - 2026-06-05
+
+What broke:
+
+- GitHub AI quality findings reported two issues in `src/go/pkg/netipc/protocol/lookup_common.go` after the maintainability split:
+  - exported type `LookupLabelView` lacked a Go doc comment.
+  - `finishLookupResponse()` converted `itemCount` through `checkedInt(uint64(itemCount))` after the stronger `checkedInt(uint64(itemCount) * uint64(LookupDirEntrySize))` guard had already succeeded, making the second checked conversion unreachable.
+- GitHub CodeQL reported one open `cpp/stack-address-escape` alert:
+  - alert `7641`
+  - `src/libnetdata/netipc/src/service/netipc_service_posix_server.c:273`
+  - `sctx->server = server`
+
+Evidence:
+
+- `src/go/pkg/netipc/protocol/lookup_common.go:19` exported `LookupLabelView` without a doc comment.
+- `src/go/pkg/netipc/protocol/lookup_common.go:447` already validates `itemCount * LookupDirEntrySize` fits in `int`; since `LookupDirEntrySize` is `8`, a subsequent bare `itemCount` conversion cannot fail after that guard.
+- GitHub code scanning API reported alert `7641` with rule `cpp/stack-address-escape`, path `src/libnetdata/netipc/src/service/netipc_service_posix_server.c`, line `273`.
+
+Root-cause model:
+
+- The Go findings are straightforward hygiene issues introduced or exposed by the lookup common split.
+- The CodeQL finding is a lifecycle false positive: the session context stores the caller-owned managed-server pointer while the managed server owns the session list, and `nipc_server_drain()` / `nipc_server_destroy()` join all session threads before releasing the session array. CodeQL's own query help says this pattern can be safe if the stored address is never used after the function returns, but it is not generally recommended without clear lifetime control.
+
+Repair plan:
+
+- Add a Go doc comment for `LookupLabelView`.
+- Replace the redundant checked conversion with `count := int(itemCount)` after the existing directory-size guard.
+- Dismiss CodeQL alert `7641` as a false positive with the managed-server lifecycle reason; do not disable the rule.
+
+Repair implemented:
+
+- `LookupLabelView` now has a Go doc comment beginning with the exported identifier name.
+- `finishLookupResponse()` now uses `count := int(itemCount)` after the existing `itemCount * LookupDirEntrySize` guard.
+- GitHub CodeQL alert `7641` was dismissed as a false positive, with the managed-server/session lifetime reason recorded in the alert dismissal comment.
+
+Validation:
+
+- `gofmt` was run on `src/go/pkg/netipc/protocol/lookup_common.go`.
+- `go test -C src/go ./pkg/netipc/protocol` passed.
+- `go test -C src/go ./...` passed.
+- `codacy-analysis analyze --files src/go/pkg/netipc/protocol/lookup_common.go --output-format json` passed with 0 issues and 0 errors.
+- `git diff --check` passed.
+- GitHub code scanning open-alert query returned 0 open alerts after dismissing alert `7641`.
+- `bash .agents/sow/audit.sh` passed after moving this completed SOW back to `done/`, with status and directory consistent.
+
+Artifact impact:
+
+- `AGENTS.md`: no workflow or guardrail change.
+- Runtime project skills: no reusable workflow change.
+- Specs: no protocol/API behavior change; the Go doc comment describes existing type purpose.
+- End-user/operator docs: no docs change needed.
+- End-user/operator skills: no exported integration guidance change needed.
+- SOW lifecycle: this completed SOW was reopened from `done/` to `current/` for residual findings and is completed again with the repair commit and alert disposition.

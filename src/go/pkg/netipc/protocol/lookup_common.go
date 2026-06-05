@@ -16,6 +16,7 @@ const (
 	LookupLabelEntrySize = 16
 )
 
+// LookupLabelView represents a key-value label pair view in the lookup wire format.
 type LookupLabelView struct {
 	Key   CStringView
 	Value CStringView
@@ -448,10 +449,7 @@ func finishLookupResponse(buf []byte, hdrSize int, itemCount uint32, dataOffset 
 	if !ok {
 		return 0
 	}
-	count, ok := checkedInt(uint64(itemCount))
-	if !ok {
-		return 0
-	}
+	count := int(itemCount)
 	finalPackedStart, ok := checkedAddInt(hdrSize, dirSize)
 	if !ok {
 		return 0
