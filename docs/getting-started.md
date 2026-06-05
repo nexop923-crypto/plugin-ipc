@@ -126,7 +126,7 @@ client.close();
 ### Go
 
 ```go
-import "github.com/netdata/plugin-ipc/go/pkg/netipc/service/cgroups"
+import cgroups "github.com/netdata/plugin-ipc/go/pkg/netipc/service/cgroups_snapshot"
 import "github.com/netdata/plugin-ipc/go/pkg/netipc/protocol"
 
 config := cgroups.ClientConfig{

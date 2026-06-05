@@ -1,6 +1,6 @@
 //go:build unix
 
-package cgroups
+package cgroups_snapshot
 
 import (
 	"fmt"

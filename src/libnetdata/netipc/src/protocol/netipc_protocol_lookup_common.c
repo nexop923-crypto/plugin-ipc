@@ -1,5 +1,32 @@
 #include "netipc_protocol_lookup_common.h"
 
+_Static_assert(sizeof(nipc_lookup_req_header_wire_t) == NIPC_CGROUPS_LOOKUP_REQ_HDR_SIZE,
+               "lookup request header must be 16 bytes");
+_Static_assert(sizeof(nipc_lookup_resp_header_wire_t) == NIPC_CGROUPS_LOOKUP_RESP_HDR_SIZE,
+               "lookup response header must be 16 bytes");
+_Static_assert(sizeof(nipc_lookup_dir_entry_t) == NIPC_LOOKUP_DIR_ENTRY_SIZE,
+               "lookup directory entry must be 8 bytes");
+_Static_assert(sizeof(nipc_lookup_label_entry_t) == NIPC_LOOKUP_LABEL_ENTRY_SIZE,
+               "lookup label entry must be 16 bytes");
+
+_Static_assert(offsetof(nipc_lookup_req_header_wire_t, layout_version) == 0, "");
+_Static_assert(offsetof(nipc_lookup_req_header_wire_t, flags) == 2, "");
+_Static_assert(offsetof(nipc_lookup_req_header_wire_t, item_count) == 4, "");
+_Static_assert(offsetof(nipc_lookup_req_header_wire_t, reserved0) == 8, "");
+_Static_assert(offsetof(nipc_lookup_req_header_wire_t, reserved1) == 12, "");
+
+_Static_assert(offsetof(nipc_lookup_resp_header_wire_t, layout_version) == 0, "");
+_Static_assert(offsetof(nipc_lookup_resp_header_wire_t, flags) == 2, "");
+_Static_assert(offsetof(nipc_lookup_resp_header_wire_t, item_count) == 4, "");
+_Static_assert(offsetof(nipc_lookup_resp_header_wire_t, generation) == 8, "");
+
+_Static_assert(offsetof(nipc_lookup_dir_entry_t, offset) == 0, "");
+_Static_assert(offsetof(nipc_lookup_dir_entry_t, length) == 4, "");
+_Static_assert(offsetof(nipc_lookup_label_entry_t, key_offset) == 0, "");
+_Static_assert(offsetof(nipc_lookup_label_entry_t, key_length) == 4, "");
+_Static_assert(offsetof(nipc_lookup_label_entry_t, value_offset) == 8, "");
+_Static_assert(offsetof(nipc_lookup_label_entry_t, value_length) == 12, "");
+
 bool nipc_lookup_bytes_have_nul(const void *ptr, uint32_t len) {
   return len > 0 && memchr(ptr, '\0', len) != NULL;
 }

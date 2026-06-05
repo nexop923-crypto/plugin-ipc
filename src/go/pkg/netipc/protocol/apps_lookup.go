@@ -1,5 +1,22 @@
 package protocol
 
+const (
+	NipcUIDUnset uint32 = ^uint32(0)
+
+	PidLookupKnown   uint16 = 0
+	PidLookupUnknown uint16 = 1
+
+	AppsCgroupKnown             uint16 = 0
+	AppsCgroupUnknownRetryLater uint16 = 1
+	AppsCgroupUnknownPermanent  uint16 = 2
+	AppsCgroupHostRoot          uint16 = 3
+
+	AppsLookupReqHdr  = 16
+	AppsLookupRespHdr = 16
+	AppsLookupItemHdr = 60
+	AppsLookupKeySize = 8
+)
+
 type AppsLookupRequestView struct {
 	ItemCount uint32
 	payload   []byte

@@ -257,6 +257,12 @@ typedef struct {
     void *user;
 } nipc_apps_lookup_service_handler_t;
 
+typedef union {
+    nipc_cgroups_service_handler_t cgroups_snapshot;
+    nipc_cgroups_lookup_service_handler_t cgroups_lookup;
+    nipc_apps_lookup_service_handler_t apps_lookup;
+} nipc_server_typed_handler_t;
+
 typedef struct nipc_managed_server nipc_managed_server_t;
 
 /* Per-session context for multi-client server */
@@ -291,9 +297,7 @@ struct nipc_managed_server {
     /* Callback */
     nipc_server_handler_fn handler;
     void *handler_user;
-    nipc_cgroups_service_handler_t service_handler;
-    nipc_cgroups_lookup_service_handler_t cgroups_lookup_handler;
-    nipc_apps_lookup_service_handler_t apps_lookup_handler;
+    nipc_server_typed_handler_t typed_handler;
     uint16_t expected_method_code;
     uint32_t learned_request_payload_bytes;
     uint32_t learned_response_payload_bytes;

@@ -2,6 +2,20 @@ package protocol
 
 import "bytes"
 
+const (
+	OrchestratorUnknown uint16 = 0
+	OrchestratorSystemd uint16 = 1
+	OrchestratorDocker  uint16 = 2
+	OrchestratorK8s     uint16 = 3
+	OrchestratorKvm     uint16 = 4
+	OrchestratorLxc     uint16 = 5
+	OrchestratorPodman  uint16 = 6
+	OrchestratorNspawn  uint16 = 7
+
+	LookupDirEntrySize   = 8
+	LookupLabelEntrySize = 16
+)
+
 type LookupLabelView struct {
 	Key   CStringView
 	Value CStringView

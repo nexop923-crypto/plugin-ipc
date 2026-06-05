@@ -41,7 +41,7 @@ echo
 PACKAGES=(
     "./pkg/netipc/protocol/"
     "./pkg/netipc/transport/posix/"
-    "./pkg/netipc/service/cgroups/"
+    "./pkg/netipc/service/cgroups_snapshot/"
 )
 
 total=0

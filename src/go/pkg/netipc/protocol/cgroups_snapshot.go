@@ -6,6 +6,13 @@ import (
 	"fmt"
 )
 
+const (
+	cgroupsReqSize  = 4
+	cgroupsRespHdr  = 24
+	cgroupsDirEntry = 8
+	cgroupsItemHdr  = 32
+)
+
 // ---------------------------------------------------------------------------
 //  Cgroups snapshot request (4 bytes)
 // ---------------------------------------------------------------------------

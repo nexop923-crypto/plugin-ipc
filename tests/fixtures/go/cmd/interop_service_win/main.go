@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/netdata/plugin-ipc/go/pkg/netipc/protocol"
-	"github.com/netdata/plugin-ipc/go/pkg/netipc/service/cgroups"
+	cgroups "github.com/netdata/plugin-ipc/go/pkg/netipc/service/cgroups_snapshot"
 )
 
 const (

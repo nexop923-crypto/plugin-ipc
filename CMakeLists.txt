@@ -37,7 +37,9 @@ endif()
 
 add_library(netipc_protocol STATIC
     src/libnetdata/netipc/src/protocol/netipc_protocol.c
-    src/libnetdata/netipc/src/protocol/netipc_protocol_cgroups.c
+    src/libnetdata/netipc/src/protocol/netipc_protocol_increment.c
+    src/libnetdata/netipc/src/protocol/netipc_protocol_string_reverse.c
+    src/libnetdata/netipc/src/protocol/netipc_protocol_cgroups_snapshot.c
     src/libnetdata/netipc/src/protocol/netipc_protocol_lookup_common.c
     src/libnetdata/netipc/src/protocol/netipc_protocol_cgroups_lookup.c
     src/libnetdata/netipc/src/protocol/netipc_protocol_apps_lookup.c
@@ -72,7 +74,17 @@ if(NOT NETIPC_WINDOWS_RUNTIME)
 
         add_library(netipc_service STATIC
             src/libnetdata/netipc/src/service/netipc_service_common.c
+            src/libnetdata/netipc/src/service/netipc_service_cgroups_cache_common.c
+            src/libnetdata/netipc/src/service/netipc_service_cgroups_cache.c
+            src/libnetdata/netipc/src/service/netipc_service_cgroups_snapshot.c
+            src/libnetdata/netipc/src/service/netipc_service_cgroups_lookup.c
+            src/libnetdata/netipc/src/service/netipc_service_apps_lookup.c
             src/libnetdata/netipc/src/service/netipc_service.c
+            src/libnetdata/netipc/src/service/netipc_service_posix_client.c
+            src/libnetdata/netipc/src/service/netipc_service_posix_client_connect.c
+            src/libnetdata/netipc/src/service/netipc_service_posix_client_call.c
+            src/libnetdata/netipc/src/service/netipc_service_posix_server.c
+            src/libnetdata/netipc/src/service/netipc_service_posix_server_session.c
         )
         target_include_directories(netipc_service PUBLIC
             src/libnetdata/netipc/include
@@ -108,7 +120,17 @@ if(NETIPC_WINDOWS_RUNTIME)
 
     add_library(netipc_service_win STATIC
         src/libnetdata/netipc/src/service/netipc_service_common.c
+        src/libnetdata/netipc/src/service/netipc_service_cgroups_cache_common.c
+        src/libnetdata/netipc/src/service/netipc_service_cgroups_cache.c
+        src/libnetdata/netipc/src/service/netipc_service_cgroups_snapshot.c
+        src/libnetdata/netipc/src/service/netipc_service_cgroups_lookup.c
+        src/libnetdata/netipc/src/service/netipc_service_apps_lookup.c
         src/libnetdata/netipc/src/service/netipc_service_win.c
+        src/libnetdata/netipc/src/service/netipc_service_win_client.c
+        src/libnetdata/netipc/src/service/netipc_service_win_client_connect.c
+        src/libnetdata/netipc/src/service/netipc_service_win_client_call.c
+        src/libnetdata/netipc/src/service/netipc_service_win_server.c
+        src/libnetdata/netipc/src/service/netipc_service_win_server_session.c
     )
     target_include_directories(netipc_service_win PUBLIC
         src/libnetdata/netipc/include

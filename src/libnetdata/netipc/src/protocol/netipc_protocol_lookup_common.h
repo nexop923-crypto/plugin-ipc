@@ -4,6 +4,21 @@
 #include "netipc_protocol_internal.h"
 
 typedef struct {
+  uint16_t layout_version;
+  uint16_t flags;
+  uint32_t item_count;
+  uint32_t reserved0;
+  uint32_t reserved1;
+} nipc_lookup_req_header_wire_t;
+
+typedef struct {
+  uint16_t layout_version;
+  uint16_t flags;
+  uint32_t item_count;
+  uint64_t generation;
+} nipc_lookup_resp_header_wire_t;
+
+typedef struct {
   const char *ptr;
   uint32_t len;
   bool require_non_empty;

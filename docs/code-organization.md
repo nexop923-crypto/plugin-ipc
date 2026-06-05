@@ -40,11 +40,23 @@ src/
         posix/                # L1: UDS SEQPACKET, POSIX SHM
         windows/              # L1: Named Pipe, Windows SHM
       service/                # L2/L3: typed client/server helpers
+        netipc_service.c      # POSIX platform fault/memory/timing helpers
+        netipc_service_posix_client.c         # POSIX public client API/config
+        netipc_service_posix_client_connect.c # POSIX client connect/reconnect
+        netipc_service_posix_client_call.c    # POSIX client raw-call flow
+        netipc_service_posix_server.c         # POSIX server lifecycle/accept
+        netipc_service_posix_server_session.c # POSIX server session loop
+        netipc_service_win.c                  # Windows platform helpers
+        netipc_service_win_client*.c          # Windows client API/connect/call
+        netipc_service_win_server*.c          # Windows server lifecycle/session
 
   crates/netipc/              # Rust library (Cargo crate)
     src/
       protocol/               # Codec
         mod.rs                # Core wire primitives and codec re-exports
+        increment.rs          # increment codec
+        string_reverse.rs     # string-reverse codec
+        cgroups_snapshot.rs   # cgroups-snapshot codec
         lookup/               # Lookup codec family
           common.rs           # Shared lookup helpers
           cgroups_lookup.rs   # cgroups lookup codec
@@ -53,10 +65,19 @@ src/
         posix.rs              # L1: UDS, SHM
         windows.rs            # L1: Named Pipe, SHM
       service/                # L2/L3: typed client/server helpers
+        cgroups_snapshot.rs   # cgroups-snapshot public typed facade
+        cgroups_lookup.rs     # cgroups-lookup public typed facade
+        apps_lookup.rs        # apps-lookup public typed facade
+        cgroups.rs            # compatibility re-exports for historical imports
         raw.rs                # Internal raw helper wrapper/re-exports
         raw/                  # Shared raw infrastructure plus per-method helpers
-          client.rs           # Shared raw client lifecycle, retry, send/receive
-          server.rs           # Shared managed-server lifecycle
+          client.rs           # Raw client state and public lifecycle
+          client_call.rs      # Shared retry/envelope/send-receive flow
+          client_unix.rs      # POSIX connect and SHM attach
+          client_windows.rs   # Windows connect and SHM attach
+          server.rs           # Managed-server state and public lifecycle
+          server_unix.rs      # POSIX accept and prepared-SHM setup
+          server_windows.rs   # Windows accept and prepared-SHM setup
           cgroups_snapshot.rs # cgroups-snapshot raw call/dispatch
           cgroups_lookup.rs   # cgroups-lookup raw call/dispatch
           apps_lookup.rs      # apps-lookup raw call/dispatch
@@ -65,6 +86,9 @@ src/
   go/pkg/netipc/              # Go library (Go package)
     protocol/                 # Codec
       frame.go                # Core wire primitives
+      increment.go            # increment codec
+      string_reverse.go       # string-reverse codec
+      cgroups_snapshot.go     # cgroups-snapshot codec
       lookup_common.go        # Shared lookup helpers
       cgroups_lookup.go       # cgroups lookup codec
       apps_lookup.go          # apps lookup codec
@@ -72,6 +96,20 @@ src/
       posix/                  # L1: UDS, SHM
       windows/                # L1: Named Pipe, SHM
     service/                  # L2/L3: typed client/server helpers
+      cgroups_snapshot/       # cgroups-snapshot public typed facade
+      cgroups_lookup/         # cgroups-lookup public typed facade
+      apps_lookup/            # apps-lookup public typed facade
+      cgroups/                # compatibility aliases for historical imports
+      raw/                    # Internal raw helper infrastructure
+        client.go             # shared raw client retry/envelope flow
+        client_unix.go        # POSIX client connect/send/receive
+        client_windows.go     # Windows client connect/send/receive
+        server.go             # shared server dispatch helpers
+        server_unix.go        # POSIX server accept/session loop
+        server_windows.go     # Windows server accept/session loop
+        *_unix.go             # per-method POSIX constructors
+        *_windows.go          # per-method Windows constructors
+        cgroups_cache*.go     # cgroups-snapshot Level 3 cache
 
 tests/
   fixtures/                   # Helper binaries for live testing
@@ -169,6 +207,14 @@ generic envelope validation. Custom typed client calls, typed handler
 aliases, dispatch adapters, and Level 3 cache logic for one service
 kind must live in service-kind-specific files so adding new service
 kinds does not expand a shared catch-all module.
+
+When shared raw/helper files grow beyond one responsibility, split by
+goal before adding a new service kind. Keep platform fault/memory helpers,
+public client API/config mapping, client connect/reconnect, raw call
+send/receive/retry flow, server lifecycle/accept, and server session loops
+in separate files where the language layout supports it. POSIX and Windows
+implementations should remain explicit files when their wait, SHM, close,
+or wake-up behavior differs.
 
 Service modules must NOT contain:
 

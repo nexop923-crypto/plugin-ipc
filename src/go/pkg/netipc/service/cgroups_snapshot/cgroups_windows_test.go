@@ -1,6 +1,6 @@
 //go:build windows
 
-package cgroups
+package cgroups_snapshot
 
 import (
 	"fmt"

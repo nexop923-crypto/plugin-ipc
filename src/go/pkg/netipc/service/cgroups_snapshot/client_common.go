@@ -1,4 +1,4 @@
-package cgroups
+package cgroups_snapshot
 
 import (
 	"github.com/netdata/plugin-ipc/go/pkg/netipc/protocol"

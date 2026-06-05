@@ -1,4 +1,33 @@
-#include "netipc_protocol_lookup_common.h"
+#include "netipc_protocol_apps_lookup_internal.h"
+
+_Static_assert(sizeof(nipc_apps_lookup_key_wire_t) == NIPC_APPS_LOOKUP_KEY_SIZE,
+               "apps lookup key must be 8 bytes");
+_Static_assert(offsetof(nipc_apps_lookup_key_wire_t, pid) == 0, "");
+_Static_assert(offsetof(nipc_apps_lookup_key_wire_t, reserved) == 4, "");
+
+_Static_assert(offsetof(nipc_apps_lookup_item_wire_t, layout_version) == 0, "");
+_Static_assert(offsetof(nipc_apps_lookup_item_wire_t, status) == 2, "");
+_Static_assert(offsetof(nipc_apps_lookup_item_wire_t, orchestrator) == 4, "");
+_Static_assert(offsetof(nipc_apps_lookup_item_wire_t, cgroup_status) == 6, "");
+_Static_assert(offsetof(nipc_apps_lookup_item_wire_t, pid) == 8, "");
+_Static_assert(offsetof(nipc_apps_lookup_item_wire_t, ppid) == 12, "");
+_Static_assert(offsetof(nipc_apps_lookup_item_wire_t, uid) == 16, "");
+_Static_assert(offsetof(nipc_apps_lookup_item_wire_t, reserved0) == 20, "");
+_Static_assert(offsetof(nipc_apps_lookup_item_wire_t, starttime) == 24, "");
+_Static_assert(offsetof(nipc_apps_lookup_item_wire_t, comm_offset) == 32, "");
+_Static_assert(offsetof(nipc_apps_lookup_item_wire_t, comm_length) == 36, "");
+_Static_assert(offsetof(nipc_apps_lookup_item_wire_t, cgroup_path_offset) == 40, "");
+_Static_assert(offsetof(nipc_apps_lookup_item_wire_t, cgroup_path_length) == 44, "");
+_Static_assert(offsetof(nipc_apps_lookup_item_wire_t, cgroup_name_offset) == 48, "");
+_Static_assert(offsetof(nipc_apps_lookup_item_wire_t, cgroup_name_length) == 52, "");
+_Static_assert(offsetof(nipc_apps_lookup_item_wire_t, label_count) == 56, "");
+_Static_assert(offsetof(nipc_apps_lookup_item_wire_t, reserved1) == 58, "");
+_Static_assert(offsetof(nipc_apps_lookup_item_wire_t, reserved1) +
+                   sizeof(((nipc_apps_lookup_item_wire_t *)0)->reserved1) ==
+               NIPC_APPS_LOOKUP_ITEM_HDR_SIZE,
+               "apps lookup fixed wire header must end at byte 60");
+_Static_assert(sizeof(nipc_apps_lookup_item_wire_t) >= NIPC_APPS_LOOKUP_ITEM_HDR_SIZE,
+               "apps lookup C struct must cover the fixed wire header");
 
 static nipc_error_t apps_lookup_validate_domains(uint16_t status,
                                                  uint16_t cgroup_status,
@@ -486,4 +515,33 @@ size_t nipc_apps_lookup_builder_finish(nipc_apps_lookup_builder_t *b) {
   return nipc_lookup_finish_common(
       b->buf, b->buf_len, b->item_count, b->data_offset,
       NIPC_APPS_LOOKUP_RESP_HDR_SIZE, b->generation);
+}
+
+nipc_error_t nipc_dispatch_apps_lookup(
+    const uint8_t *req, size_t req_len,
+    uint8_t *resp, size_t resp_size, size_t *resp_len,
+    nipc_apps_lookup_handler_fn handler, void *user)
+{
+  nipc_apps_lookup_req_view_t request;
+  nipc_error_t err = nipc_apps_lookup_req_decode(req, req_len, &request);
+  if (err != NIPC_OK)
+    return err;
+
+  nipc_apps_lookup_builder_t builder;
+  nipc_apps_lookup_builder_init(&builder, resp, resp_size,
+                                request.item_count, 0);
+
+  if (!handler(user, &request, &builder)) {
+    if (builder.error != NIPC_OK)
+      return builder.error;
+    return NIPC_ERR_HANDLER_FAILED;
+  }
+
+  if (builder.error != NIPC_OK)
+    return builder.error;
+  if (builder.item_count != request.item_count)
+    return NIPC_ERR_BAD_ITEM_COUNT;
+
+  *resp_len = nipc_apps_lookup_builder_finish(&builder);
+  return (*resp_len > 0) ? NIPC_OK : NIPC_ERR_OVERFLOW;
 }

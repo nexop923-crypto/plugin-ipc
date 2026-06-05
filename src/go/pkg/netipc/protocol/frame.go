@@ -51,29 +51,6 @@ const (
 	MethodCgroupsLookup   uint16 = 4
 	MethodAppsLookup      uint16 = 5
 
-	NipcUIDUnset uint32 = ^uint32(0)
-
-	OrchestratorUnknown uint16 = 0
-	OrchestratorSystemd uint16 = 1
-	OrchestratorDocker  uint16 = 2
-	OrchestratorK8s     uint16 = 3
-	OrchestratorKvm     uint16 = 4
-	OrchestratorLxc     uint16 = 5
-	OrchestratorPodman  uint16 = 6
-	OrchestratorNspawn  uint16 = 7
-
-	CgroupLookupKnown             uint16 = 0
-	CgroupLookupUnknownRetryLater uint16 = 1
-	CgroupLookupUnknownPermanent  uint16 = 2
-
-	PidLookupKnown   uint16 = 0
-	PidLookupUnknown uint16 = 1
-
-	AppsCgroupKnown             uint16 = 0
-	AppsCgroupUnknownRetryLater uint16 = 1
-	AppsCgroupUnknownPermanent  uint16 = 2
-	AppsCgroupHostRoot          uint16 = 3
-
 	// Profile bits.
 	ProfileBaseline    uint32 = 0x01
 	ProfileSHMHybrid   uint32 = 0x02
@@ -87,26 +64,12 @@ const (
 	// (1 MiB) to prevent excessive memory allocation from a compromised peer.
 	MaxPayloadCap uint32 = 1024 * 1024
 
-	// Alignment for batch items and cgroups items.
+	// Alignment for batch items and typed codec items.
 	Alignment = 8
 
 	// Payload sizes.
-	helloSize       = 44
-	helloAckSize    = 48
-	cgroupsReqSize  = 4
-	cgroupsRespHdr  = 24
-	cgroupsDirEntry = 8
-	cgroupsItemHdr  = 32
-
-	CgroupsLookupReqHdr  = 16
-	CgroupsLookupRespHdr = 16
-	CgroupsLookupItemHdr = 28
-	AppsLookupReqHdr     = 16
-	AppsLookupRespHdr    = 16
-	AppsLookupItemHdr    = 60
-	LookupDirEntrySize   = 8
-	LookupLabelEntrySize = 16
-	AppsLookupKeySize    = 8
+	helloSize    = 44
+	helloAckSize = 48
 )
 
 var ne = binary.NativeEndian

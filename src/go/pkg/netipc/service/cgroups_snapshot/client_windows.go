@@ -1,13 +1,13 @@
-//go:build unix
+//go:build windows
 
-package cgroups
+package cgroups_snapshot
 
 import (
-	"github.com/netdata/plugin-ipc/go/pkg/netipc/transport/posix"
+	windows "github.com/netdata/plugin-ipc/go/pkg/netipc/transport/windows"
 )
 
-func clientConfigToTransport(config ClientConfig) posix.ClientConfig {
-	return posix.ClientConfig{
+func clientConfigToTransport(config ClientConfig) windows.ClientConfig {
+	return windows.ClientConfig{
 		SupportedProfiles:       config.SupportedProfiles,
 		PreferredProfiles:       config.PreferredProfiles,
 		MaxRequestBatchItems:    config.MaxRequestBatchItems,
@@ -17,8 +17,8 @@ func clientConfigToTransport(config ClientConfig) posix.ClientConfig {
 	}
 }
 
-func serverConfigToTransport(config ServerConfig) posix.ServerConfig {
-	return posix.ServerConfig{
+func serverConfigToTransport(config ServerConfig) windows.ServerConfig {
+	return windows.ServerConfig{
 		SupportedProfiles:       config.SupportedProfiles,
 		PreferredProfiles:       config.PreferredProfiles,
 		MaxRequestBatchItems:    config.MaxRequestBatchItems,

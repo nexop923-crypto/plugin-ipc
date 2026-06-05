@@ -1,11 +1,17 @@
 //! APPS_LOOKUP codec.
 
 use super::common::*;
-use crate::protocol::cgroups::StrView;
-use crate::protocol::{
-    align8, NipcError, APPS_CGROUP_HOST_ROOT, APPS_CGROUP_KNOWN, APPS_CGROUP_UNKNOWN_PERMANENT,
-    APPS_CGROUP_UNKNOWN_RETRY_LATER, NIPC_UID_UNSET, PID_LOOKUP_KNOWN, PID_LOOKUP_UNKNOWN,
-};
+use crate::protocol::{align8, NipcError, StrView};
+
+pub const NIPC_UID_UNSET: u32 = u32::MAX;
+
+pub const PID_LOOKUP_KNOWN: u16 = 0;
+pub const PID_LOOKUP_UNKNOWN: u16 = 1;
+
+pub const APPS_CGROUP_KNOWN: u16 = 0;
+pub const APPS_CGROUP_UNKNOWN_RETRY_LATER: u16 = 1;
+pub const APPS_CGROUP_UNKNOWN_PERMANENT: u16 = 2;
+pub const APPS_CGROUP_HOST_ROOT: u16 = 3;
 
 pub const APPS_LOOKUP_REQ_HDR_SIZE: usize = 16;
 pub const APPS_LOOKUP_RESP_HDR_SIZE: usize = 16;

@@ -38,7 +38,7 @@ cd "$GO_DIR"
 PACKAGES=(
     "./pkg/netipc/protocol/"
     "./pkg/netipc/transport/posix/"
-    "./pkg/netipc/service/cgroups/"
+    "./pkg/netipc/service/cgroups_snapshot/"
 )
 
 COVERDIR=$(mktemp -d)

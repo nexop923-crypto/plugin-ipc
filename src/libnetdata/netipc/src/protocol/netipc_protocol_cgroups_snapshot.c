@@ -1,4 +1,21 @@
-#include "netipc_protocol_internal.h"
+#include "netipc_protocol_cgroups_snapshot_internal.h"
+
+/* Cgroups request (4 bytes) */
+_Static_assert(sizeof(nipc_cgroups_req_t) == 4,
+               "nipc_cgroups_req_t must be 4 bytes");
+
+/* Cgroups snapshot response header (24 bytes) */
+_Static_assert(sizeof(nipc_cgroups_resp_header_t) == 24,
+               "nipc_cgroups_resp_header_t must be 24 bytes");
+_Static_assert(offsetof(nipc_cgroups_resp_header_t, layout_version) == 0, "");
+_Static_assert(offsetof(nipc_cgroups_resp_header_t, flags) == 2, "");
+_Static_assert(offsetof(nipc_cgroups_resp_header_t, item_count) == 4, "");
+_Static_assert(offsetof(nipc_cgroups_resp_header_t, systemd_enabled) == 8, "");
+_Static_assert(offsetof(nipc_cgroups_resp_header_t, reserved) == 12, "");
+_Static_assert(offsetof(nipc_cgroups_resp_header_t, generation) == 16, "");
+
+_Static_assert(sizeof(nipc_cgroups_item_wire_t) == 32,
+               "nipc_cgroups_item_wire_t must be 32 bytes");
 
 /* ------------------------------------------------------------------ */
 /*  Cgroups snapshot request (4 bytes)                                */
@@ -320,4 +337,31 @@ size_t nipc_cgroups_builder_finish(nipc_cgroups_builder_t *b) {
     memcpy(p, &hdr, sizeof(hdr));
 
     return final_packed_start + packed_data_len;
+}
+
+nipc_error_t nipc_dispatch_cgroups_snapshot(
+    const uint8_t *req, size_t req_len,
+    uint8_t *resp, size_t resp_size, size_t *resp_len,
+    uint32_t max_items,
+    nipc_cgroups_handler_fn handler, void *user)
+{
+    nipc_cgroups_req_t request;
+    nipc_error_t err = nipc_cgroups_req_decode(req, req_len, &request);
+    if (err != NIPC_OK)
+        return err;
+
+    nipc_cgroups_builder_t builder;
+    nipc_cgroups_builder_init(&builder, resp, resp_size, max_items, 0, 0);
+
+    if (!handler(user, &request, &builder)) {
+        if (builder.error != NIPC_OK)
+            return builder.error;
+        return NIPC_ERR_HANDLER_FAILED;
+    }
+
+    if (builder.error != NIPC_OK)
+        return builder.error;
+
+    *resp_len = nipc_cgroups_builder_finish(&builder);
+    return (*resp_len > 0) ? NIPC_OK : NIPC_ERR_OVERFLOW;
 }

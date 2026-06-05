@@ -9,6 +9,11 @@ mod cgroups_cache;
 mod cgroups_lookup;
 mod cgroups_snapshot;
 mod client;
+mod client_call;
+#[cfg(unix)]
+mod client_unix;
+#[cfg(windows)]
+mod client_windows;
 mod common;
 mod dispatch;
 mod increment;
@@ -17,6 +22,10 @@ mod server;
 mod server_session_unix;
 #[cfg(windows)]
 mod server_session_windows;
+#[cfg(unix)]
+mod server_unix;
+#[cfg(windows)]
+mod server_windows;
 mod string_reverse;
 
 pub use apps_lookup::{apps_lookup_dispatch, AppsLookupHandler};

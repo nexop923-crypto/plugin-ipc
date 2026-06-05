@@ -1,10 +1,18 @@
 //! Shared helpers for lookup codecs.
 
-use crate::protocol::cgroups::StrView;
-use crate::protocol::{align8, NipcError, ALIGNMENT};
+use crate::protocol::{align8, NipcError, StrView, ALIGNMENT};
 
 pub const LOOKUP_DIR_ENTRY_SIZE: usize = 8;
 pub const LOOKUP_LABEL_ENTRY_SIZE: usize = 16;
+
+pub const ORCHESTRATOR_UNKNOWN: u16 = 0;
+pub const ORCHESTRATOR_SYSTEMD: u16 = 1;
+pub const ORCHESTRATOR_DOCKER: u16 = 2;
+pub const ORCHESTRATOR_K8S: u16 = 3;
+pub const ORCHESTRATOR_KVM: u16 = 4;
+pub const ORCHESTRATOR_LXC: u16 = 5;
+pub const ORCHESTRATOR_PODMAN: u16 = 6;
+pub const ORCHESTRATOR_NSPAWN: u16 = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LookupLabelView<'a> {

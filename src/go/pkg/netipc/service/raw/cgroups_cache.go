@@ -2,6 +2,31 @@ package raw
 
 import "time"
 
+// Default response buffer size for L3 cache refresh.
+const cacheResponseBufSize = 65536
+
+// CacheItem is an owned copy of a single cgroup item.
+// Built from ephemeral L2 views during cache construction.
+type CacheItem struct {
+	Hash    uint32
+	Options uint32
+	Enabled uint32
+	Name    string // owned copy
+	Path    string // owned copy
+}
+
+// CacheStatus is a diagnostic snapshot for the L3 cache.
+type CacheStatus struct {
+	Populated           bool
+	ItemCount           uint32
+	SystemdEnabled      uint32
+	Generation          uint64
+	RefreshSuccessCount uint32
+	RefreshFailureCount uint32
+	ConnectionState     ClientState // underlying L2 client state
+	LastRefreshTs       int64       // monotonic timestamp (ms) of last successful refresh, 0 if never
+}
+
 // cacheBucket is one open-addressing bucket for hash+name lookup.
 type cacheBucket struct {
 	index int

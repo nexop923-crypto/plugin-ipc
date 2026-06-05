@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define NIPC_CLIENT_BUF_DEFAULT 65536u
+#define NIPC_SERVICE_RESPONSE_BUF_DEFAULT 65536u
 
 uint32_t nipc_service_common_next_power_of_2_u32(uint32_t n)
 {
@@ -47,20 +47,14 @@ bool nipc_service_common_mul_would_overflow(size_t count, size_t size)
     return size != 0 && count > SIZE_MAX / size;
 }
 
-uint32_t nipc_service_common_cgroups_request_payload_default(void)
+uint32_t nipc_service_common_request_payload_default(void)
 {
     return NIPC_MAX_PAYLOAD_DEFAULT;
 }
 
-uint32_t nipc_service_common_cgroups_response_payload_default(void)
+uint32_t nipc_service_common_response_payload_default(void)
 {
-    return NIPC_CLIENT_BUF_DEFAULT;
-}
-
-/* Lookup services batch dynamic keys, so their request buffer starts at the typed response size. */
-uint32_t nipc_service_common_lookup_request_payload_default(void)
-{
-    return NIPC_CLIENT_BUF_DEFAULT;
+    return NIPC_SERVICE_RESPONSE_BUF_DEFAULT;
 }
 
 /* Typed services expose one batch-count knob; level 1 keeps request/response counts symmetric. */
@@ -156,48 +150,6 @@ nipc_error_t nipc_service_common_response_status_to_error(nipc_client_ctx_t *ctx
     }
 }
 
-bool nipc_service_common_cgroups_lookup_request_size(const nipc_str_view_t *paths,
-                                                     uint32_t path_count,
-                                                     size_t *size_out)
-{
-    if (nipc_service_common_mul_would_overflow(
-            (size_t)path_count, NIPC_LOOKUP_DIR_ENTRY_SIZE))
-        return false;
-
-    size_t data = NIPC_CGROUPS_LOOKUP_REQ_HDR_SIZE +
-                  (size_t)path_count * NIPC_LOOKUP_DIR_ENTRY_SIZE;
-    for (uint32_t i = 0; i < path_count; i++) {
-        size_t aligned = nipc_align8(data);
-        if (aligned < data)
-            return false;
-        if (!paths || paths[i].len > SIZE_MAX - aligned - 1u)
-            return false;
-        data = aligned + (size_t)paths[i].len + 1u;
-    }
-    *size_out = data;
-    return true;
-}
-
-bool nipc_service_common_apps_lookup_request_size(uint32_t pid_count,
-                                                  size_t *size_out)
-{
-    if (nipc_service_common_mul_would_overflow(
-            (size_t)pid_count, NIPC_LOOKUP_DIR_ENTRY_SIZE) ||
-        nipc_service_common_mul_would_overflow(
-            (size_t)pid_count, NIPC_APPS_LOOKUP_KEY_SIZE))
-        return false;
-
-    size_t dir = (size_t)pid_count * NIPC_LOOKUP_DIR_ENTRY_SIZE;
-    size_t keys = (size_t)pid_count * NIPC_APPS_LOOKUP_KEY_SIZE;
-#if SIZE_MAX <= UINT32_MAX
-    if (NIPC_APPS_LOOKUP_REQ_HDR_SIZE > SIZE_MAX - dir ||
-        NIPC_APPS_LOOKUP_REQ_HDR_SIZE + dir > SIZE_MAX - keys)
-        return false;
-#endif
-    *size_out = NIPC_APPS_LOOKUP_REQ_HDR_SIZE + dir + keys;
-    return true;
-}
-
 void nipc_service_common_server_note_request_capacity(nipc_managed_server_t *server,
                                                       uint32_t payload_len)
 {
@@ -246,58 +198,6 @@ void nipc_service_common_server_note_response_capacity(nipc_managed_server_t *se
                                         __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {
     }
 #endif
-}
-
-static uint32_t service_snapshot_max_items(
-    size_t response_buf_size,
-    const nipc_cgroups_service_handler_t *service_handler)
-{
-    if (service_handler->snapshot_max_items != 0)
-        return service_handler->snapshot_max_items;
-    return nipc_cgroups_builder_estimate_max_items(response_buf_size);
-}
-
-nipc_error_t nipc_service_common_typed_dispatch(void *user,
-                                                const nipc_header_t *request_hdr,
-                                                const uint8_t *request_payload,
-                                                size_t request_len,
-                                                uint8_t *response_buf,
-                                                size_t response_buf_size,
-                                                size_t *response_len_out)
-{
-    nipc_managed_server_t *server = (nipc_managed_server_t *)user;
-    (void)request_hdr;
-
-    switch (server->expected_method_code) {
-    case NIPC_METHOD_CGROUPS_SNAPSHOT: {
-        nipc_cgroups_service_handler_t *service_handler = &server->service_handler;
-        if (!service_handler->handle)
-            return NIPC_ERR_HANDLER_FAILED;
-        return nipc_dispatch_cgroups_snapshot(
-            request_payload, request_len,
-            response_buf, response_buf_size, response_len_out,
-            service_snapshot_max_items(response_buf_size, service_handler),
-            service_handler->handle, service_handler->user);
-    }
-    case NIPC_METHOD_CGROUPS_LOOKUP:
-        if (!server->cgroups_lookup_handler.handle)
-            return NIPC_ERR_HANDLER_FAILED;
-        return nipc_dispatch_cgroups_lookup(
-            request_payload, request_len,
-            response_buf, response_buf_size, response_len_out,
-            server->cgroups_lookup_handler.handle,
-            server->cgroups_lookup_handler.user);
-    case NIPC_METHOD_APPS_LOOKUP:
-        if (!server->apps_lookup_handler.handle)
-            return NIPC_ERR_HANDLER_FAILED;
-        return nipc_dispatch_apps_lookup(
-            request_payload, request_len,
-            response_buf, response_buf_size, response_len_out,
-            server->apps_lookup_handler.handle,
-            server->apps_lookup_handler.user);
-    default:
-        return NIPC_ERR_HANDLER_FAILED;
-    }
 }
 
 void nipc_service_common_prepare_response_header(const nipc_header_t *request_hdr,
@@ -371,221 +271,4 @@ void nipc_service_common_apply_dispatch_result(nipc_managed_server_t *server,
         *response_len = 0;
         break;
     }
-}
-
-static void cache_free_items(nipc_cgroups_cache_item_t *items, uint32_t count)
-{
-    if (!items)
-        return;
-
-    for (uint32_t i = 0; i < count; i++) {
-        free(items[i].name);
-        free(items[i].path);
-    }
-    free(items);
-}
-
-static uint32_t cache_hash_name(const char *name)
-{
-    uint32_t h = 5381;
-    for (const unsigned char *p = (const unsigned char *)name; *p; p++)
-        h = ((h << 5) + h) + *p;
-    return h;
-}
-
-static bool cache_build_hashtable(nipc_cgroups_cache_t *cache,
-                                  const nipc_service_common_cache_ops_t *ops)
-{
-    free(cache->buckets);
-    cache->buckets = NULL;
-    cache->bucket_count = 0;
-
-    if (cache->item_count == 0)
-        return true;
-
-    uint32_t bcount = nipc_service_common_next_power_of_2_u32(cache->item_count * 2);
-    nipc_cgroups_hash_bucket_t *buckets = ops->calloc_fn(
-        bcount, sizeof(nipc_cgroups_hash_bucket_t),
-        ops->cache_buckets_fault_site);
-    if (!buckets)
-        return false;
-
-    uint32_t mask = bcount - 1;
-    for (uint32_t i = 0; i < cache->item_count; i++) {
-        uint32_t key = cache->items[i].hash ^ cache_hash_name(cache->items[i].name);
-        uint32_t slot = key & mask;
-
-        while (buckets[slot].used)
-            slot = (slot + 1) & mask;
-
-        buckets[slot].index = i;
-        buckets[slot].used = true;
-    }
-
-    cache->buckets = buckets;
-    cache->bucket_count = bcount;
-    return true;
-}
-
-static nipc_cgroups_cache_item_t *cache_build_items(
-    const nipc_cgroups_resp_view_t *view,
-    const nipc_service_common_cache_ops_t *ops,
-    uint32_t *count_out)
-{
-    uint32_t n = view->item_count;
-    *count_out = 0;
-
-    if (n == 0)
-        return NULL;
-
-    nipc_cgroups_cache_item_t *items = ops->calloc_fn(
-        n, sizeof(nipc_cgroups_cache_item_t),
-        ops->cache_items_fault_site);
-    if (!items)
-        return NULL;
-
-    for (uint32_t i = 0; i < n; i++) {
-        nipc_cgroups_item_view_t iv;
-        nipc_error_t err = nipc_cgroups_resp_item(view, i, &iv);
-        if (err != NIPC_OK) {
-            cache_free_items(items, i);
-            return NULL;
-        }
-
-        items[i].hash = iv.hash;
-        items[i].options = iv.options;
-        items[i].enabled = iv.enabled;
-
-        items[i].name = ops->malloc_fn(
-            iv.name.len + 1, ops->cache_item_name_fault_site);
-        if (!items[i].name) {
-            cache_free_items(items, i);
-            return NULL;
-        }
-        if (iv.name.len > 0)
-            memcpy(items[i].name, iv.name.ptr, iv.name.len);
-        items[i].name[iv.name.len] = '\0';
-
-        items[i].path = ops->malloc_fn(
-            iv.path.len + 1, ops->cache_item_path_fault_site);
-        if (!items[i].path) {
-            free(items[i].name);
-            cache_free_items(items, i);
-            return NULL;
-        }
-        if (iv.path.len > 0)
-            memcpy(items[i].path, iv.path.ptr, iv.path.len);
-        items[i].path[iv.path.len] = '\0';
-    }
-
-    *count_out = n;
-    return items;
-}
-
-void nipc_service_common_cgroups_cache_init(nipc_cgroups_cache_t *cache,
-                                            const char *run_dir,
-                                            const char *service_name,
-                                            const nipc_client_config_t *config)
-{
-    memset(cache, 0, sizeof(*cache));
-    nipc_client_init(&cache->client, run_dir, service_name, config);
-}
-
-bool nipc_service_common_cgroups_cache_refresh(
-    nipc_cgroups_cache_t *cache,
-    const nipc_service_common_cache_ops_t *ops)
-{
-    nipc_client_refresh(&cache->client);
-
-    nipc_cgroups_resp_view_t view;
-    nipc_error_t err = nipc_client_call_cgroups_snapshot(&cache->client, &view);
-    if (err != NIPC_OK) {
-        cache->refresh_failure_count++;
-        return false;
-    }
-
-    uint32_t new_count = 0;
-    nipc_cgroups_cache_item_t *new_items = NULL;
-    if (view.item_count > 0) {
-        new_items = cache_build_items(&view, ops, &new_count);
-        if (!new_items) {
-            cache->refresh_failure_count++;
-            return false;
-        }
-    }
-
-    cache_free_items(cache->items, cache->item_count);
-    cache->items = new_items;
-    cache->item_count = new_count;
-    cache->systemd_enabled = view.systemd_enabled;
-    cache->generation = view.generation;
-    cache->populated = true;
-    cache->refresh_success_count++;
-    cache->last_refresh_ts = ops->monotonic_ms_fn();
-    cache_build_hashtable(cache, ops);
-
-    return true;
-}
-
-const nipc_cgroups_cache_item_t *nipc_service_common_cgroups_cache_lookup(
-    const nipc_cgroups_cache_t *cache,
-    uint32_t hash,
-    const char *name)
-{
-    if (!cache->populated || !cache->items || !name)
-        return NULL;
-
-    if (cache->buckets && cache->bucket_count > 0) {
-        uint32_t key = hash ^ cache_hash_name(name);
-        uint32_t mask = cache->bucket_count - 1;
-        uint32_t slot = key & mask;
-
-        while (cache->buckets[slot].used) {
-            uint32_t idx = cache->buckets[slot].index;
-            if (cache->items[idx].hash == hash &&
-                strcmp(cache->items[idx].name, name) == 0)
-                return &cache->items[idx];
-            slot = (slot + 1) & mask;
-        }
-        return NULL;
-    }
-
-    for (uint32_t i = 0; i < cache->item_count; i++) {
-        if (cache->items[i].hash == hash &&
-            strcmp(cache->items[i].name, name) == 0)
-            return &cache->items[i];
-    }
-
-    return NULL;
-}
-
-void nipc_service_common_cgroups_cache_status(const nipc_cgroups_cache_t *cache,
-                                              nipc_cgroups_cache_status_t *out)
-{
-    out->populated = cache->populated;
-    out->item_count = cache->item_count;
-    out->systemd_enabled = cache->systemd_enabled;
-    out->generation = cache->generation;
-    out->refresh_success_count = cache->refresh_success_count;
-    out->refresh_failure_count = cache->refresh_failure_count;
-    out->connection_state = cache->client.state;
-    out->last_refresh_ts = cache->last_refresh_ts;
-}
-
-void nipc_service_common_cgroups_cache_close(nipc_cgroups_cache_t *cache)
-{
-    cache_free_items(cache->items, cache->item_count);
-    cache->items = NULL;
-    cache->item_count = 0;
-    cache->populated = false;
-
-    free(cache->buckets);
-    cache->buckets = NULL;
-    cache->bucket_count = 0;
-
-    free(cache->response_buf);
-    cache->response_buf = NULL;
-    cache->response_buf_size = 0;
-
-    nipc_client_close(&cache->client);
 }

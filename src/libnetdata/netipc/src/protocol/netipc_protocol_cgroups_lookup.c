@@ -1,4 +1,17 @@
-#include "netipc_protocol_lookup_common.h"
+#include "netipc_protocol_cgroups_lookup_internal.h"
+
+_Static_assert(sizeof(nipc_cgroups_lookup_item_wire_t) == NIPC_CGROUPS_LOOKUP_ITEM_HDR_SIZE,
+               "cgroups lookup item header must be 28 bytes");
+_Static_assert(offsetof(nipc_cgroups_lookup_item_wire_t, layout_version) == 0, "");
+_Static_assert(offsetof(nipc_cgroups_lookup_item_wire_t, status) == 2, "");
+_Static_assert(offsetof(nipc_cgroups_lookup_item_wire_t, orchestrator) == 4, "");
+_Static_assert(offsetof(nipc_cgroups_lookup_item_wire_t, reserved0) == 6, "");
+_Static_assert(offsetof(nipc_cgroups_lookup_item_wire_t, path_offset) == 8, "");
+_Static_assert(offsetof(nipc_cgroups_lookup_item_wire_t, path_length) == 12, "");
+_Static_assert(offsetof(nipc_cgroups_lookup_item_wire_t, name_offset) == 16, "");
+_Static_assert(offsetof(nipc_cgroups_lookup_item_wire_t, name_length) == 20, "");
+_Static_assert(offsetof(nipc_cgroups_lookup_item_wire_t, label_count) == 24, "");
+_Static_assert(offsetof(nipc_cgroups_lookup_item_wire_t, reserved1) == 26, "");
 
 static nipc_error_t cgroups_lookup_validate_semantics(uint16_t status,
                                                       uint16_t orchestrator,
@@ -405,4 +418,33 @@ size_t nipc_cgroups_lookup_builder_finish(nipc_cgroups_lookup_builder_t *b) {
   return nipc_lookup_finish_common(
       b->buf, b->buf_len, b->item_count, b->data_offset,
       NIPC_CGROUPS_LOOKUP_RESP_HDR_SIZE, b->generation);
+}
+
+nipc_error_t nipc_dispatch_cgroups_lookup(
+    const uint8_t *req, size_t req_len,
+    uint8_t *resp, size_t resp_size, size_t *resp_len,
+    nipc_cgroups_lookup_handler_fn handler, void *user)
+{
+  nipc_cgroups_lookup_req_view_t request;
+  nipc_error_t err = nipc_cgroups_lookup_req_decode(req, req_len, &request);
+  if (err != NIPC_OK)
+    return err;
+
+  nipc_cgroups_lookup_builder_t builder;
+  nipc_cgroups_lookup_builder_init(&builder, resp, resp_size,
+                                   request.item_count, 0);
+
+  if (!handler(user, &request, &builder)) {
+    if (builder.error != NIPC_OK)
+      return builder.error;
+    return NIPC_ERR_HANDLER_FAILED;
+  }
+
+  if (builder.error != NIPC_OK)
+    return builder.error;
+  if (builder.item_count != request.item_count)
+    return NIPC_ERR_BAD_ITEM_COUNT;
+
+  *resp_len = nipc_cgroups_lookup_builder_finish(&builder);
+  return (*resp_len > 0) ? NIPC_OK : NIPC_ERR_OVERFLOW;
 }

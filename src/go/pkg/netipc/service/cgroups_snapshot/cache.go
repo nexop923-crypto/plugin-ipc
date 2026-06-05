@@ -1,6 +1,6 @@
-//go:build windows
+//go:build unix
 
-package cgroups
+package cgroups_snapshot
 
 import (
 	raw "github.com/netdata/plugin-ipc/go/pkg/netipc/service/raw"

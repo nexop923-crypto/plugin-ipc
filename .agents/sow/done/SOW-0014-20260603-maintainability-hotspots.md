@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: continuing useful low-risk complexity hotspot cleanup after the raw-cache, Go facade, lookup codec, C service-common, and Rust raw-service organization targets.
+Sub-state: selected maintainability hotspots and the per-codec/per-service organization sweep are implemented and validated.
 
 ## Requirements
 
@@ -1063,7 +1063,7 @@ Sensitive data gate:
 
 ## Outcome
 
-Raw cache, Go typed-facade, apps lookup builder, cgroups lookup builder, apps lookup semantic validation, five Go code-scanning findings, C lookup builder function-level complexity, C POSIX/Windows service helper duplication, and Rust raw-service organization are locally remediated; the overall maintainability SOW remains in progress pending the next selected maintainability target and Codacy metric re-check after push.
+Raw cache, Go typed-facade, apps lookup builder, cgroups lookup builder, apps lookup semantic validation, five Go code-scanning findings, C lookup builder function-level complexity, C POSIX/Windows service helper duplication, Rust raw-service organization, and the final per-codec/per-service organization sweep are implemented and validated.
 
 ### 2026-06-04 Windows CI And CodeQL Coverage
 
@@ -1367,14 +1367,165 @@ Raw cache, Go typed-facade, apps lookup builder, cgroups lookup builder, apps lo
   - End-user/operator skills: `docs/netipc-integrator-skill.md` updated so downstream integrator guidance points service/method-specific Rust raw code at the new child-file layout.
   - SOW lifecycle: target remains part of active `SOW-0014`; SOW remains in progress pending metric re-check and the next selected hotspot.
 
+### Target Gate - Organization Completion Sweep
+
+Problem / root-cause model:
+
+- The repository now documents a stricter organization rule: service-kind codec code and service/method-specific raw/service code must live in service-kind-specific files.
+- The Rust raw split fixed one high-value surface, but a fresh review found older mixed-service implementation still present in C and Go.
+- Working theory: most remaining gaps can be corrected by source movement and small wrapper extraction, without changing public APIs, wire bytes, transport behavior, retry behavior, or platform lifecycle loops.
+
+Evidence reviewed:
+
+- `docs/code-organization.md` per-codec rule: custom request/response codec code for one codec must not be mixed with another codec.
+- `docs/code-organization.md` service rule: custom typed client calls, typed handler aliases, dispatch adapters, and Level 3 cache logic for one service kind must live in service-kind-specific files.
+- `src/go/pkg/netipc/service/raw/types.go` mixes all raw handler aliases and dispatch adapters.
+- `src/go/pkg/netipc/service/raw/client.go` and `src/go/pkg/netipc/service/raw/client_windows.go` mix platform raw lifecycle with service-specific raw constructors and typed calls.
+- `src/go/pkg/netipc/service/raw/lookup_client.go` mixes cgroups lookup and apps lookup raw typed calls.
+- `src/libnetdata/netipc/src/protocol/netipc_protocol.c` still contains increment, string-reverse, and all typed protocol dispatch helpers.
+- `src/libnetdata/netipc/src/protocol/netipc_protocol_internal.h` mixes service-specific wire structs for cgroups snapshot and lookup codecs.
+- `src/libnetdata/netipc/src/service/netipc_service_common.c` has one mixed typed dispatch switch and cgroups cache implementation in the common service file.
+- `src/libnetdata/netipc/src/service/netipc_service.c` and `src/libnetdata/netipc/src/service/netipc_service_win.c` contain all typed C client calls and all typed server initializers.
+- `src/go/pkg/netipc/protocol/frame.go` keeps service-specific codec sizing constants in the frame/envelope file.
+
+Affected contracts and surfaces:
+
+- C protocol implementation files and `CMakeLists.txt`.
+- C service implementation files and C service build target inputs.
+- Go protocol package internals.
+- Go raw service package internals.
+- Public C, Rust, and Go APIs must remain source-compatible.
+- Protocol wire bytes and cross-language interop must remain unchanged.
+
+Existing patterns to reuse:
+
+- Rust raw wrapper plus child-file layout from `src/crates/netipc/src/service/raw.rs` and `src/crates/netipc/src/service/raw/`.
+- Rust and Go lookup protocol split using common lookup helpers plus per-codec files.
+- C protocol split using a core source file plus codec-specific files linked into the same static library.
+- Keep POSIX/Windows lifecycle/session files explicit when platform behavior differs.
+
+Risk and blast radius:
+
+- Medium. The intended work is mostly source organization, but the C and Go service paths include retry, response borrowing, batch handling, cache refresh, and POSIX/Windows build tags.
+- Main regression risks are missed symbol movement, build-tag mistakes, changed Go exported raw helper names, changed C static-library source list, changed handler storage, changed retry behavior, or Windows-only compile failures.
+
+Sensitive data handling plan:
+
+- Do not read `.env`.
+- Do not write secrets, credentials, tokens, customer data, personal data, private endpoints, or proprietary details into code, docs, skills, specs, or SOW artifacts.
+
+Implementation plan:
+
+1. Split Go raw service-specific constructors, typed calls, handler aliases, dispatch adapters, and cgroups cache code into service/method-specific files; keep platform lifecycle code in POSIX/Windows files.
+2. Split C protocol increment, string-reverse, cgroups snapshot dispatch, cgroups lookup dispatch, apps lookup dispatch, and service-specific internal wire structs into codec-specific files/headers.
+3. Split C service typed call/init/dispatch/cache code into service-kind files while keeping POSIX/Windows connection/session/accept lifecycle code in platform files.
+4. Move Go protocol service-specific sizing constants out of `frame.go` into the relevant codec files.
+5. Re-run the organization review after each slice and continue until no remaining non-test mixed service-specific implementation is found.
+
+Validation plan:
+
+- Go: `gofmt`, `go test -C src/go ./pkg/netipc/protocol ./pkg/netipc/service/raw ./pkg/netipc/service/cgroups ./pkg/netipc/service/cgroups_lookup ./pkg/netipc/service/apps_lookup`, `go test -C src/go ./...`, and Windows Go compile/test slices where build tags changed.
+- C: `cmake --build build`, focused protocol/service CTest slices, POSIX service/cache interop scripts, and Windows/MSYS build/tests if C service files change.
+- Cross-language: `bash tests/interop_codec.sh` after protocol movement and service/cache interop scripts after service movement.
+- Static/hygiene: `codacy-analysis analyze --output-format json`, `git diff --check`, `bash .agents/sow/audit.sh`, and sensitive-data scan over touched durable artifacts.
+
+Artifact impact plan:
+
+- `AGENTS.md`: no workflow or guardrail change expected.
+- Runtime project skills: no reusable workflow change expected.
+- Specs: no public protocol/API behavior change expected; update only if this sweep exposes a contract mismatch.
+- End-user/operator docs: update `docs/code-organization.md` and `docs/netipc-integrator-skill.md` if file layout or service-addition guidance changes.
+- End-user/operator skills: update only if exported/operator integration guidance changes.
+- SOW lifecycle: record each split, validation evidence, remaining gaps, and final same-failure search result in this SOW.
+
+### 2026-06-04 Organization Completion Sweep
+
+- The user requested redoing the organization analysis and continuing splits until no more useful service/method-specific implementation remained in shared files.
+- Implemented Go raw service split:
+  - `src/go/pkg/netipc/service/raw/client.go` now owns shared client retry/envelope validation.
+  - `client_unix.go` and `client_windows.go` now own platform connect/send/receive behavior.
+  - `server.go` now owns shared dispatch helpers.
+  - `server_unix.go` and `server_windows.go` now own platform server accept/session loops.
+  - `poll_unix.go` owns the POSIX poll helper.
+  - `src/go/pkg/netipc/service/raw/increment*.go`, `string_reverse*.go`, `cgroups_snapshot*.go`, `cgroups_lookup*.go`, and `apps_lookup*.go` now own their typed raw constructors/calls and dispatch adapters.
+  - `src/go/pkg/netipc/service/raw/cgroups_cache*.go` now owns the cgroups-snapshot Level 3 cache implementation and platform wrappers.
+  - `src/go/pkg/netipc/service/raw/dispatch.go` owns shared dispatch error mapping.
+- Implemented Go protocol/service naming cleanup:
+  - `src/go/pkg/netipc/protocol/cgroups_snapshot.go` now owns the cgroups-snapshot codec.
+  - `src/go/pkg/netipc/protocol/frame.go` now keeps generic envelope/control/method constants only; lookup status and sizing constants moved to the owning lookup codec files.
+  - `src/go/pkg/netipc/service/cgroups_snapshot/` now owns the cgroups-snapshot public service implementation.
+  - `src/go/pkg/netipc/service/cgroups/compat.go` preserves the historical `service/cgroups` import path as alias-only compatibility.
+- Implemented C protocol split:
+  - `src/libnetdata/netipc/src/protocol/netipc_protocol.c` now contains generic envelope/chunk/batch/hello logic.
+  - `netipc_protocol_increment.c`, `netipc_protocol_string_reverse.c`, `netipc_protocol_cgroups_snapshot.c`, `netipc_protocol_cgroups_lookup.c`, and `netipc_protocol_apps_lookup.c` now own service-kind codec dispatch and service-specific assertions.
+  - Service-specific private wire structs moved out of `netipc_protocol_internal.h` into codec-specific internal headers or lookup-common headers.
+- Implemented C service split:
+  - `src/libnetdata/netipc/src/service/netipc_service.c` and `netipc_service_win.c` now keep platform fault/memory/timing helpers.
+  - `netipc_service_posix_client.c` and `netipc_service_win_client.c` now own public client API/config mapping.
+  - `netipc_service_posix_client_connect.c` and `netipc_service_win_client_connect.c` now own platform client connect/reconnect and SHM attach.
+  - `netipc_service_posix_client_call.c` and `netipc_service_win_client_call.c` now own platform raw-call send/receive/retry flow.
+  - `netipc_service_posix_server.c` and `netipc_service_win_server.c` now own platform server lifecycle, accept, drain, and destroy.
+  - `netipc_service_posix_server_session.c` and `netipc_service_win_server_session.c` now own platform server session I/O loops and session reaping.
+  - `netipc_service_cgroups_snapshot.c`, `netipc_service_cgroups_lookup.c`, and `netipc_service_apps_lookup.c` now own typed calls, typed dispatch adapters, and typed server initializers.
+  - `netipc_service_cgroups_cache*.c` now owns the cgroups-snapshot Level 3 cache.
+  - `netipc_service_platform.h` exposes the internal platform hooks needed by service-kind files.
+  - `netipc_service_posix_internal.h` and `netipc_service_win_internal.h` expose platform-private helper hooks across the split platform files.
+  - `netipc_service_common.*` now contains generic common helpers; cgroups-named default payload helpers were removed.
+- Implemented Rust residual cleanup:
+  - `src/crates/netipc/src/protocol/cgroups_snapshot.rs` now owns the cgroups-snapshot codec.
+  - Lookup status/orchestrator constants moved from `protocol/mod.rs` into `protocol/lookup/{common,cgroups_lookup,apps_lookup}.rs`.
+  - `src/crates/netipc/src/service/cgroups_snapshot.rs` now owns the cgroups-snapshot public service implementation.
+  - `src/crates/netipc/src/service/cgroups.rs` preserves the historical module path as re-export-only compatibility.
+  - `src/crates/netipc/src/protocol/tests.rs` now contains the large mixed protocol unit-test module; `protocol/mod.rs` is runtime-only plus module wiring and generic constants.
+  - `src/crates/netipc/src/service/raw/client.rs`, `client_call.rs`, `client_unix.rs`, and `client_windows.rs` split raw client state, raw-call flow, and platform connection behavior.
+  - `src/crates/netipc/src/service/raw/server.rs`, `server_unix.rs`, `server_windows.rs`, `server_session_unix.rs`, and `server_session_windows.rs` split managed-server state, platform accept loops, and platform session loops.
+- Updated durable artifacts:
+  - `docs/code-organization.md` now documents per-codec files, per-service public facades, raw service child files, and compatibility modules/packages.
+  - `docs/netipc-integrator-skill.md` now points to the service-kind implementation files and labels compatibility paths.
+  - `docs/getting-started.md`, Go fixtures, Go benchmark drivers, and coverage/race scripts now use `service/cgroups_snapshot` as the primary Go implementation path.
+- Same-failure search result:
+  - Shared runtime protocol files searched: C `netipc_protocol.c` and `netipc_protocol_internal.h`, Go `frame.go` and `lookup_common.go`, Rust `protocol/mod.rs` and `protocol/lookup/common.rs`.
+  - Shared runtime service files searched: C POSIX/Windows common/platform/client/server split files, Go raw client/server/types/lookup-common files, Rust raw client/client-call/server/session/common files.
+  - No remaining non-test service/method-specific implementation was found in shared runtime files.
+  - Remaining service-specific shared-file hits are intentional module declarations, method-code constants, compatibility-only alias files/modules, public aggregate headers, or test-only files.
+- Size result after the final flow split:
+  - C `netipc_protocol.c`: 364 lines.
+  - C POSIX service split files: 166, 120, 173, 246, 417, and 320 lines.
+  - C Windows service split files: 170, 121, 181, 237, 497, and 249 lines.
+  - Go raw client/server split files: 236, 215, 202, 28, 409, and 452 lines.
+  - Rust raw client/server split files: 272, 386, 113, 166, and 215 lines; `raw.rs` wrapper is 74 lines.
+- Validation:
+  - `cmake --build build` passed.
+  - `/usr/bin/ctest --test-dir build --output-on-failure` passed: 46/46 POSIX tests.
+  - `go test -C src/go ./...` passed.
+  - Windows Go compile checks passed for protocol, raw, cgroups-snapshot, cgroups compatibility, cgroups-lookup, and apps-lookup packages.
+  - `cargo fmt --manifest-path src/crates/netipc/Cargo.toml --check` passed.
+  - `cargo test --manifest-path src/crates/netipc/Cargo.toml` passed: 332 Rust library tests plus fixture/benchmark binary harnesses and doc-tests.
+  - `bash tests/interop_codec.sh` passed; C, Rust, and Go decode paths all passed and generated byte-identical fixture files.
+  - `bash tests/test_service_interop.sh` passed: 9/9 C/Rust/Go service interop pairs.
+  - Windows/MSYS temp validation on `win11` passed: full configure/build and `/usr/bin`-equivalent CTest in `build-win` passed 25/25 Windows tests.
+  - `codacy-analysis analyze --files <changed/new files> --output-format json` passed on 108 changed/new files with 0 issues and 0 errors. The run explicitly filtered out repo-root `.env`.
+  - `git diff --check` passed.
+  - `bash .agents/sow/audit.sh` passed and reported SOW initialization complete and clean.
+- Artifact impact:
+  - `AGENTS.md`: no workflow or guardrail change.
+  - Runtime project skills: no reusable workflow change.
+  - Specs: no public protocol/API behavior or wire-format change; no spec update needed beyond code-organization docs.
+  - End-user/operator docs: `docs/code-organization.md`, `docs/getting-started.md`, and `docs/netipc-integrator-skill.md` updated for the new implementation paths and compatibility notes.
+  - End-user/operator skills: `docs/netipc-integrator-skill.md` updated because downstream integration guidance references implementation roots.
+  - SOW lifecycle: SOW remains in progress until the user decides whether to close this maintainability target or continue with the next complexity/duplication hotspot.
+
 ## Lessons Extracted
 
-Pending.
+- Compatibility paths should be alias-only when renaming service-kind implementation files or packages.
+- Test-only mixed modules can still inflate file complexity; moving Rust protocol tests out of `protocol/mod.rs` reduced the shared runtime file from 2459 lines to 624 lines without changing runtime behavior.
+- Shared raw infrastructure should split by flow once it grows: platform helpers, public API/config, connect/reconnect, raw call send/receive/retry, server lifecycle, and server session loops are different responsibilities.
 
 ## Followup
 
-- Continue only with complexity or duplication targets that have clear maintainability gain and low enough behavior risk.
-- Current remaining high-complexity targets include the POSIX/Windows service session loops and transport send/receive/reconnect paths; these have higher behavioral and performance risk than the helper/cache extraction completed here.
+- No concrete deferred implementation remains in this SOW.
+- No remaining service/method organization gap is currently known in the touched runtime files.
+- Further complexity or duplication work should start from fresh Codacy/GitHub evidence and a new target-specific SOW or explicit reopening decision.
 
 ## Regression Log
 

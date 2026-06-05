@@ -7,5 +7,6 @@
 pub mod apps_lookup;
 pub mod cgroups;
 pub mod cgroups_lookup;
+pub mod cgroups_snapshot;
 #[doc(hidden)]
 pub mod raw;

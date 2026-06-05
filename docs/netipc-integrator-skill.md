@@ -87,18 +87,30 @@ Relevant implementation roots:
 - C public service API:
   - [src/libnetdata/netipc/include/netipc/netipc_service.h](../src/libnetdata/netipc/include/netipc/netipc_service.h)
   - [src/libnetdata/netipc/include/netipc/netipc_protocol.h](../src/libnetdata/netipc/include/netipc/netipc_protocol.h)
+- C internal service implementation:
+  - [src/libnetdata/netipc/src/service/netipc_service_cgroups_snapshot.c](../src/libnetdata/netipc/src/service/netipc_service_cgroups_snapshot.c)
+  - [src/libnetdata/netipc/src/service/netipc_service_cgroups_lookup.c](../src/libnetdata/netipc/src/service/netipc_service_cgroups_lookup.c)
+  - [src/libnetdata/netipc/src/service/netipc_service_apps_lookup.c](../src/libnetdata/netipc/src/service/netipc_service_apps_lookup.c)
+  - [src/libnetdata/netipc/src/service/netipc_service_posix_client*.c](../src/libnetdata/netipc/src/service/)
+  - [src/libnetdata/netipc/src/service/netipc_service_posix_server*.c](../src/libnetdata/netipc/src/service/)
+  - [src/libnetdata/netipc/src/service/netipc_service_win_client*.c](../src/libnetdata/netipc/src/service/)
+  - [src/libnetdata/netipc/src/service/netipc_service_win_server*.c](../src/libnetdata/netipc/src/service/)
 - Rust public service API:
-  - [src/crates/netipc/src/service/cgroups.rs](../src/crates/netipc/src/service/cgroups.rs)
+  - [src/crates/netipc/src/service/cgroups_snapshot.rs](../src/crates/netipc/src/service/cgroups_snapshot.rs)
   - [src/crates/netipc/src/service/cgroups_lookup.rs](../src/crates/netipc/src/service/cgroups_lookup.rs)
   - [src/crates/netipc/src/service/apps_lookup.rs](../src/crates/netipc/src/service/apps_lookup.rs)
+  - [src/crates/netipc/src/service/cgroups.rs](../src/crates/netipc/src/service/cgroups.rs) preserves the historical cgroups-snapshot module path with re-exports.
 - Go public service API:
-  - [src/go/pkg/netipc/service/cgroups/](../src/go/pkg/netipc/service/cgroups/)
+  - [src/go/pkg/netipc/service/cgroups_snapshot/](../src/go/pkg/netipc/service/cgroups_snapshot/)
   - [src/go/pkg/netipc/service/cgroups_lookup/](../src/go/pkg/netipc/service/cgroups_lookup/)
   - [src/go/pkg/netipc/service/apps_lookup/](../src/go/pkg/netipc/service/apps_lookup/)
+  - [src/go/pkg/netipc/service/cgroups/](../src/go/pkg/netipc/service/cgroups/) preserves the historical cgroups-snapshot import path with aliases.
 - Internal raw helpers used to build public typed services:
   - [src/crates/netipc/src/service/raw.rs](../src/crates/netipc/src/service/raw.rs)
   - [src/crates/netipc/src/service/raw/](../src/crates/netipc/src/service/raw/)
   - [src/go/pkg/netipc/service/raw/](../src/go/pkg/netipc/service/raw/)
+  - shared raw/client/server files own generic lifecycle, retry, call, and session loops
+  - service-kind files own typed calls, handler aliases, dispatch adapters, and cache logic
 
 Important current limitation:
 
@@ -381,7 +393,9 @@ Current public shapes:
 
 Public typed service facade lives in:
 
-- [src/crates/netipc/src/service/cgroups.rs](../src/crates/netipc/src/service/cgroups.rs)
+- [src/crates/netipc/src/service/cgroups_snapshot.rs](../src/crates/netipc/src/service/cgroups_snapshot.rs)
+
+The historical [src/crates/netipc/src/service/cgroups.rs](../src/crates/netipc/src/service/cgroups.rs) module path is compatibility-only.
 
 Current public shapes:
 
@@ -409,7 +423,9 @@ Current public shapes:
 
 Public typed service facade lives in:
 
-- [src/go/pkg/netipc/service/cgroups/](../src/go/pkg/netipc/service/cgroups/)
+- [src/go/pkg/netipc/service/cgroups_snapshot/](../src/go/pkg/netipc/service/cgroups_snapshot/)
+
+The historical [src/go/pkg/netipc/service/cgroups/](../src/go/pkg/netipc/service/cgroups/) import path is compatibility-only.
 
 Current public shapes:
 

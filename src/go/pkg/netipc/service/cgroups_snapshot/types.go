@@ -4,7 +4,7 @@
 // Clients connect to a service kind, not to a plugin identity. One service
 // endpoint serves one request kind only. The outer request code remains part
 // of the envelope for validation, not public multi-method dispatch.
-package cgroups
+package cgroups_snapshot
 
 import (
 	"github.com/netdata/plugin-ipc/go/pkg/netipc/protocol"

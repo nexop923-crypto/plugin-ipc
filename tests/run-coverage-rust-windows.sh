@@ -21,7 +21,7 @@ INTEROP_REGEX='^(test_named_pipe_interop|test_win_shm_interop|test_service_win_i
 IGNORE_REGEX='(src[\\/]+bin[\\/]|tests[\\/]+fixtures[\\/]+rust[\\/]+src[\\/]+bin[\\/]|bench[\\/]+drivers[\\/]+rust[\\/]+src[\\/])'
 THRESHOLD=${1:-90}
 CRITICAL_FILES=(
-    'service\cgroups.rs'
+    'service\cgroups_snapshot.rs'
     'transport\windows.rs'
     'transport\win_shm.rs'
 )
@@ -152,7 +152,7 @@ printf >&2 "${NC}\n"
 
 echo
 echo -e "${CYAN}=== Key Rust Windows Coverage ===${NC}"
-grep -E 'service\\cgroups.rs|transport\\windows.rs|transport\\win_shm.rs|^TOTAL' "$REPORT_LOG" || true
+grep -E 'service\\cgroups_snapshot.rs|transport\\windows.rs|transport\\win_shm.rs|^TOTAL' "$REPORT_LOG" || true
 
 echo
 echo -e "${CYAN}=== Full Summary Path ===${NC}"

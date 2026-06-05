@@ -2,6 +2,16 @@ package protocol
 
 import "bytes"
 
+const (
+	CgroupLookupKnown             uint16 = 0
+	CgroupLookupUnknownRetryLater uint16 = 1
+	CgroupLookupUnknownPermanent  uint16 = 2
+
+	CgroupsLookupReqHdr  = 16
+	CgroupsLookupRespHdr = 16
+	CgroupsLookupItemHdr = 28
+)
+
 type CgroupsLookupRequestView struct {
 	ItemCount uint32
 	payload   []byte
