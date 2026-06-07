@@ -669,6 +669,41 @@ SonarCloud duplication composition for Netdata PR #22649:
 
 The duplication is a real POSIX/Windows paired-implementation signal, not unresolved Sonar line findings. It will be handled after this review-finding fix is committed and re-vendored.
 
+### 2026-06-07 - SonarCloud Duplication Reduction
+
+Live Netdata PR #22649 recheck before this increment:
+
+- GitHub review threads: eight total, eight resolved, zero open.
+- SonarCloud issue API: zero unresolved issues on the PR.
+- SonarCloud hotspot API: zero unresolved hotspots on the PR.
+- SonarCloud quality gate status: failed only because new-code duplication is 10.5%, above the configured 3% threshold.
+- Latest SonarCloud duplication component tree still reports 1,826 duplicated new lines across 29 files.
+
+Selected low-risk production-source refactors:
+
+- Extract Go POSIX/Windows transport receive framing from `uds_receive.go` and `pipe_receive.go` into a shared internal framing receiver. This targets the top two SonarCloud contributors, 189 duplicated lines each.
+- Extract the Go raw-service per-session request/dispatch/response loop from `server_unix.go` and `server_windows.go` into shared raw-service helpers while leaving OS-specific accept, readiness, receive, send, and SHM cleanup code local. This targets the next two contributors, 160 and 159 duplicated lines.
+- Extract Go POSIX/Windows transport send chunking and HELLO/HELLO_ACK protocol helpers into shared internal framing helpers while keeping socket/pipe I/O and session construction platform-local. This targets the next Go transport contributors: handshake and send pairs.
+- Extract C client refresh, raw-call envelope validation, and retry/reconnect policy into common service helpers with platform callbacks. This targets the POSIX/Windows C client-call and client lifecycle duplication without changing transport send/receive functions.
+
+Risk controls:
+
+- Do not merge POSIX and Windows accept loops; they differ in readiness, listener shutdown, and SHM setup behavior.
+- Keep transport-specific receive/send as callbacks so OS-specific error and timeout semantics remain local.
+- Validate POSIX Go packages locally and Windows Go packages on Win11 after the refactor.
+- Validate C common helper changes on POSIX and Win11 because both platform service client paths now call common retry/raw-call helpers.
+
+Validation completed for this duplication-reduction increment:
+
+- `git diff --check`: passed.
+- `cd src/go && go test -count=1 ./pkg/netipc/transport/internal/framing ./pkg/netipc/transport/posix ./pkg/netipc/service/raw`: passed.
+- `cd src/go && go test -count=1 ./pkg/netipc/...`: passed.
+- `cmake --build build`: passed.
+- `/usr/bin/ctest --test-dir build --output-on-failure`: 46/46 tests passed.
+- Win11 temp-copy Go validation: `cd src/go && go test -count=1 ./pkg/netipc/transport/windows ./pkg/netipc/service/raw`: passed.
+- Win11 temp-copy C validation: MSYS CMake build of `test_win_service`, `test_win_service_extra`, and `test_win_service_payload_limits` passed; CTest for those three tests passed.
+- `bash .agents/sow/audit.sh`: passed.
+
 ## Validation
 
 Acceptance criteria evidence:
