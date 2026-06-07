@@ -593,6 +593,30 @@ Validation completed for this follow-up:
 - Win11 temp-copy Rust validation: `cargo test --manifest-path src/crates/netipc/Cargo.toml service::raw -- --test-threads=1`: 22 Windows raw-service tests passed.
 - Win11 temp-copy Go validation: `cd src/go && CGO_ENABLED=0 go test -count=1 ./pkg/netipc/service/raw ./pkg/netipc/transport/windows`: passed.
 
+### 2026-06-07 - PR 22649 SonarCloud Hotspot Follow-up
+
+Pre-push Netdata PR #22649 sync found nine SonarCloud security hotspots on the old PR head:
+
+- `src/libnetdata/netipc/src/transport/posix/netipc_uds_lifecycle.c`: four `strncpy` hotspot reports around socket path copies.
+- `src/libnetdata/netipc/src/service/netipc_service_common.c`: one `strlen` hotspot in service context field copying.
+- `src/libnetdata/netipc/src/service/netipc_service_posix_server.c`: two `strlen` hotspots in server config field copying.
+- `src/libnetdata/netipc/src/service/netipc_service_win_server.c`: two `strlen` hotspots in Windows server config field copying.
+
+Implemented SDK follow-up:
+
+- Replaced POSIX UDS `strncpy` socket/path copies with a checked NUL-terminated bounded copy helper and a `sockaddr_un` fill helper.
+- Replaced repeated POSIX and Windows service server `strlen`/`memcpy` config-field copies with `nipc_service_common_copy_cstr_field()`.
+- Changed the common service copy helper to avoid open-ended `strlen` while preserving previous truncating field-copy behavior.
+- Same-pattern search found two additional `strncpy` copies in POSIX SHM context path storage; those were changed to checked bounded copies in the same increment.
+
+Validation completed for this hotspot follow-up:
+
+- `git diff --check`: passed.
+- `rg "strncpy\\(|strlen\\(run_dir\\)|strlen\\(service_name\\)|size_t len = strlen" src/libnetdata/netipc/src src/libnetdata/netipc/include`: only the unrelated Windows named-pipe hash input remains.
+- `cmake --build build`: passed.
+- `/usr/bin/ctest --test-dir build --output-on-failure`: 46/46 tests passed.
+- Win11 temp-copy focused C validation: MSYS CMake build of `test_win_service`, `test_win_service_extra`, and `test_win_service_payload_limits` passed; CTest for those three tests passed.
+
 ## Validation
 
 Acceptance criteria evidence:
@@ -606,6 +630,7 @@ Acceptance criteria evidence:
 - Vendor script now copies the full vendored C include/source subtrees so split C files are not missed.
 - Netdata PR #22649 review and SonarCloud findings were verified against SDK source and addressed in the SDK before re-vendoring.
 - Plugin-ipc Go modules now match Netdata's Go version, `go 1.26.0`.
+- Netdata PR #22649 SonarCloud security hotspots for C string/path copying were verified and addressed in the SDK before re-vendoring.
 
 Tests or equivalent validation:
 
@@ -617,6 +642,7 @@ Tests or equivalent validation:
 - `cd src/go && go test -count=1 ./...`: passed after restoring the required protocol-level lookup dispatch guard.
 - Win11 temp-copy Rust raw-service validation: 22 tests passed.
 - Win11 temp-copy Go service/raw and transport/windows validation: passed.
+- Win11 temp-copy C service validation: `test_win_service`, `test_win_service_extra`, and `test_win_service_payload_limits` built and passed under MSYS.
 - `git diff --check`: passed.
 - `bash -n tests/run-windows-bench.sh tests/test_windows_bench_stability_policy.sh vendor-to-netdata.sh`: passed.
 - `codacy-analysis analyze --files ... --output-format json`: 0 issues; known local Revive adapter invocation error remains.
@@ -632,6 +658,7 @@ Reviewer findings:
 - GitHub AI findings for `netipc_uds_send.c` were manually verified and addressed.
 - GitHub review-thread findings from Netdata PR #22649 were manually verified and addressed where they were real.
 - SonarCloud PR findings for Netdata PR #22649 were queried and addressed in the SDK source before re-vendoring.
+- SonarCloud PR security hotspots for C `strncpy` and open-ended config field length/copy patterns were queried and addressed in the SDK source before re-vendoring.
 - No external AI reviewer was used for this increment.
 
 Same-failure scan:
@@ -641,6 +668,7 @@ Same-failure scan:
 - Same benchmark batch sizing nondeterminism pattern was found and fixed in POSIX and Windows Go benchmark drivers.
 - Same dead Go service-level lookup dispatch guard was found and removed in apps lookup and cgroups lookup.
 - Similar Go protocol-level lookup dispatch guards were tested and kept because regression coverage proves they still guard an overflow state.
+- Same C `strncpy` path-copy pattern was found beyond the reported UDS lifecycle file in POSIX SHM context path storage and fixed in the same increment.
 
 Sensitive data gate:
 
