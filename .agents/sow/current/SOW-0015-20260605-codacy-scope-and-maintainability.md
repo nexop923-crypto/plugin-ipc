@@ -704,6 +704,40 @@ Validation completed for this duplication-reduction increment:
 - Win11 temp-copy C validation: MSYS CMake build of `test_win_service`, `test_win_service_extra`, and `test_win_service_payload_limits` passed; CTest for those three tests passed.
 - `bash .agents/sow/audit.sh`: passed.
 
+### 2026-06-07 - Netdata PR #22649 post-push scanner pass
+
+- Rechecked Netdata PR #22649 after vendoring SDK commit `1c6093540d0c` into Netdata commit `50a9c100ec0c`.
+- GitHub review state:
+  - review threads: 8 total, 0 open.
+  - review decision remains `REVIEW_REQUIRED`.
+- SonarCloud state:
+  - open issues: 0.
+  - open hotspots: 0.
+  - quality gate still reports duplication failure, but `project_pull_requests/list` shows SonarCloud's latest PR analysis is for old Netdata commit `86c0aa015f73`, not current PR head `50a9c100ec0c`.
+  - The stale SonarCloud duplication component list still names files that were changed by the latest duplication cleanup, so it must not be treated as current evidence until SonarCloud reanalyzes the latest head.
+- Codacy state on current Netdata PR head:
+  - GitHub check `Codacy Static Code Analysis`: `ACTION_REQUIRED`.
+  - Repo-local Codacy API fetch returned 155 live `Added` issues and 25 already `Fixed` issues.
+  - Live `Added` issues are:
+    - 84 `cppcheck_missingIncludeSystem` reports against standard/POSIX/Windows system headers such as `<stdint.h>`, `<string.h>`, `<unistd.h>`, and `<windows.h>`.
+    - 66 `cppcheck_unusedStructMember` reports against C wire-layout/internal operation structs.
+    - 5 `cppcheck_knownConditionTrueFalse` reports against split C server init paths.
+  - Already `Fixed` Codacy reports include all `flawfinder_strncpy`, `flawfinder_usleep`, and `cppcheck_unreadVariable` findings from older PR commits.
+- Verified the 5 live `cppcheck_knownConditionTrueFalse` reports are real but low risk: both split server init functions reject `NULL` `config` before the flagged assignments.
+- Fixed the redundant split-server `config` guards in:
+  - `src/libnetdata/netipc/src/service/netipc_service_posix_server.c`
+  - `src/libnetdata/netipc/src/service/netipc_service_win_server.c`
+- Validation for the split-server guard cleanup:
+  - `git diff --check`: passed.
+  - POSIX focused build of `test_service`, `test_service_extra`, and `test_service_payload_limits`: passed.
+  - `/usr/bin/ctest --test-dir build --output-on-failure -R 'test_service|test_service_extra|test_service_payload_limits'`: 9/9 matching service tests passed.
+  - Win11 MSYS focused build of `test_win_service`, `test_win_service_extra`, and `test_win_service_payload_limits`: passed.
+  - Win11 MSYS CTest for the same three targets: 3/3 passed.
+  - `bash .agents/sow/audit.sh`: passed.
+- Scanner-policy decision still needed before the Netdata PR can become Codacy-clean:
+  - `cppcheck_missingIncludeSystem` appears non-actionable in Codacy because it cannot see ordinary system headers in the analyzer environment.
+  - `cppcheck_unusedStructMember` is noisy for NetIPC wire-layout structs and internal callback tables, but disabling it affects the whole Netdata repository unless a narrower suppression path is chosen.
+
 ## Validation
 
 Acceptance criteria evidence:
