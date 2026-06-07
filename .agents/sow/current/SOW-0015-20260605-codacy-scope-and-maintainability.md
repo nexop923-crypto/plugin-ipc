@@ -544,6 +544,55 @@ Plan:
 7. Validate Netdata build/tests for the vendored NetIPC surface, including Windows compile/unit validation if the Netdata workflow exposes it locally.
 8. Commit only explicit Netdata vendor/update files, push the branch, and open a PR against Netdata.
 
+### 2026-06-07 - PR 22649 Review And SonarCloud Follow-up
+
+Netdata PR #22649 review context was checked before editing:
+
+- GitHub review threads had two unresolved, non-outdated, actionable findings:
+  - `src/crates/netipc/src/service/raw/server.rs:95` equivalent vendored Windows raw server shutdown risk: only the initially stored listener handle was available to `stop()`, while later accepted pipe instances could keep blocking.
+  - `src/go/pkg/netipc/service/raw/cgroups_lookup.go:123` service dispatch had a dead `builder.Finish() == 0` check after builder error and item-count checks.
+- Same-pattern service dispatch review was checked in Go raw apps lookup; the same dead service-level guard existed there.
+- Protocol-level Go lookup dispatch was also checked. The guard looked similar, but `cd src/go && go test -count=1 ./...` proved it is required: `TestLookupDispatchCoverage` intentionally corrupts builder state and expects `ErrOverflow`. The protocol-level guards were restored.
+- SonarCloud PR query reported six open issues:
+  - Go parameter-count findings in `src/go/pkg/netipc/protocol/apps_lookup.go`.
+  - Go unnecessary recovered variable findings in `src/go/pkg/netipc/service/raw/server_unix.go` and `src/go/pkg/netipc/service/raw/server_windows.go`.
+  - C `openat()` descriptor finding in `src/libnetdata/netipc/src/transport/posix/netipc_shm.c`.
+  - C memcpy bounds finding in `src/libnetdata/netipc/src/transport/posix/netipc_uds_receive.c`.
+- GitHub AI quality findings also reported:
+  - ignored `clock_gettime` syscall result in `bench/drivers/go/main.go`.
+  - Go integer `range` compatibility concerns in Go service/raw and stale-dial code.
+  - missing rationale around the Go UDS 32-bit total-length limit.
+  - maintainability issues in `vendor-to-netdata.sh`.
+
+Implemented SDK follow-up:
+
+- Aligned all plugin-ipc Go modules to Netdata's Go version, `go 1.26.0`.
+- Ran Go's `go fix` modernization on the affected Go module surfaces, including benchmark driver loop and slice cleanups.
+- Changed Go benchmark CPU-time helper to check the `clock_gettime` syscall error path and return zero on failure.
+- Added the missing Go UDS comment explaining the protocol's 32-bit framed total-length contract.
+- Hardened `vendor-to-netdata.sh`:
+  - validates source `go.mod` presence and parses module paths from the `module` directive.
+  - avoids fragile status-line spacing.
+  - counts only relevant C, Rust, and Go source files.
+  - prints an import-rewrite review command after the suggested `sed` command.
+- Updated Rust Windows raw server to refresh the stored listener handle around each accept and clear it before joining session threads, so `stop()` can target the currently blocking listener handle.
+- Removed dead service-level Go lookup dispatch `builder.Finish() == 0` checks in raw apps lookup and raw cgroups lookup.
+- Reduced SonarCloud Go parameter count in apps lookup semantic validators by passing a private `appsLookupSemantics` struct.
+- Removed unnecessary recovered-value variables from Go raw server panic-recovery paths.
+- Avoided `openat()` with an invalid directory descriptor in POSIX SHM stale cleanup.
+- Added explicit chunk and first-packet bounds checks in POSIX UDS receive before copying chunk payload data into the assembled receive buffer.
+
+Validation completed for this follow-up:
+
+- `cd bench/drivers/go && go fix ./... && go test ./...`: passed.
+- `git diff --check`: passed.
+- `cd src/go && go test -count=1 ./...`: passed.
+- `cargo test --manifest-path src/crates/netipc/Cargo.toml`: 332 tests passed.
+- `cmake --build build`: passed.
+- `/usr/bin/ctest --test-dir build --output-on-failure`: 46/46 tests passed.
+- Win11 temp-copy Rust validation: `cargo test --manifest-path src/crates/netipc/Cargo.toml service::raw -- --test-threads=1`: 22 Windows raw-service tests passed.
+- Win11 temp-copy Go validation: `cd src/go && CGO_ENABLED=0 go test -count=1 ./pkg/netipc/service/raw ./pkg/netipc/transport/windows`: passed.
+
 ## Validation
 
 Acceptance criteria evidence:
@@ -555,6 +604,8 @@ Acceptance criteria evidence:
   - send chunk count no longer forms `(remaining + chunk_payload_budget - 1)`.
 - Same-pattern C transport issue was addressed in `src/libnetdata/netipc/src/transport/windows/netipc_named_pipe.c`.
 - Vendor script now copies the full vendored C include/source subtrees so split C files are not missed.
+- Netdata PR #22649 review and SonarCloud findings were verified against SDK source and addressed in the SDK before re-vendoring.
+- Plugin-ipc Go modules now match Netdata's Go version, `go 1.26.0`.
 
 Tests or equivalent validation:
 
@@ -563,6 +614,9 @@ Tests or equivalent validation:
 - `cargo test --manifest-path src/crates/netipc/Cargo.toml`: 332 passed.
 - `cd src/go && go test ./...`: passed.
 - `cd bench/drivers/go && go test ./...`: passed.
+- `cd src/go && go test -count=1 ./...`: passed after restoring the required protocol-level lookup dispatch guard.
+- Win11 temp-copy Rust raw-service validation: 22 tests passed.
+- Win11 temp-copy Go service/raw and transport/windows validation: passed.
 - `git diff --check`: passed.
 - `bash -n tests/run-windows-bench.sh tests/test_windows_bench_stability_policy.sh vendor-to-netdata.sh`: passed.
 - `codacy-analysis analyze --files ... --output-format json`: 0 issues; known local Revive adapter invocation error remains.
@@ -576,6 +630,8 @@ Real-use evidence:
 Reviewer findings:
 
 - GitHub AI findings for `netipc_uds_send.c` were manually verified and addressed.
+- GitHub review-thread findings from Netdata PR #22649 were manually verified and addressed where they were real.
+- SonarCloud PR findings for Netdata PR #22649 were queried and addressed in the SDK source before re-vendoring.
 - No external AI reviewer was used for this increment.
 
 Same-failure scan:
@@ -583,6 +639,8 @@ Same-failure scan:
 - Same C total-message-width helper pattern was found and fixed in the Windows named-pipe transport.
 - Same chunk-count overflow-prone ceil pattern was found and fixed in POSIX C, Windows C, POSIX Rust, Windows Rust, POSIX Go, and Windows Go transport paths.
 - Same benchmark batch sizing nondeterminism pattern was found and fixed in POSIX and Windows Go benchmark drivers.
+- Same dead Go service-level lookup dispatch guard was found and removed in apps lookup and cgroups lookup.
+- Similar Go protocol-level lookup dispatch guards were tested and kept because regression coverage proves they still guard an overflow state.
 
 Sensitive data gate:
 

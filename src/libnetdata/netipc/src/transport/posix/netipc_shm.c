@@ -864,7 +864,12 @@ void nipc_shm_cleanup_stale(const char *run_dir, const char *service_name)
         return;
 
     int dir_fd = dirfd(dir);
-    bool allow_stale_unlink = dir_fd >= 0 && dir_fd_allows_stale_unlink(dir_fd);
+    if (dir_fd < 0) {
+        closedir(dir);
+        return;
+    }
+
+    bool allow_stale_unlink = dir_fd_allows_stale_unlink(dir_fd);
 
     struct dirent *ent;
     while ((ent = readdir(dir)) != NULL) {
@@ -876,12 +881,6 @@ void nipc_shm_cleanup_stale(const char *run_dir, const char *service_name)
         if (strncmp(ent->d_name, prefix, prefix_len) != 0)
             continue;
         if (strcmp(ent->d_name + nlen - suffix_len, suffix) != 0)
-            continue;
-
-        /* Build full path and check if stale */
-        char path[512];
-        int n = snprintf(path, sizeof(path), "%s/%s", run_dir, ent->d_name);
-        if (n < 0 || (size_t)n >= sizeof(path))
             continue;
 
         /* check_shm_stale unlinks stale files and returns:

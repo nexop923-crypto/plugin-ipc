@@ -44,7 +44,7 @@ fi
 # ── Go package (entire pkg/netipc/ tree + go.mod) ────────────────────
 
 echo -e "${GREEN}Vendoring netipc from${NC} $SRC"
-echo -e "${GREEN}                  to${NC} $DST"
+echo -e "${GREEN}Vendoring netipc to${NC} $DST"
 echo ""
 
 # ── C ────────────────────────────────────────────────────────────────
@@ -92,6 +92,11 @@ GO_SRC="$SRC/go"
 GO_DST="$DST/src/go"
 run mkdir -p "$GO_DST/pkg/netipc"
 
+if [ ! -f "$GO_SRC/go.mod" ]; then
+    echo -e >&2 "${RED}[ERROR]${NC} Missing required file: $GO_SRC/go.mod"
+    exit 1
+fi
+
 # Format before copying
 if command -v gofmt >/dev/null 2>&1; then
     echo -e "  ${GRAY}running gofmt...${NC}"
@@ -107,15 +112,26 @@ run rsync -a --delete \
 
 # ── Summary ──────────────────────────────────────────────────────────
 echo ""
-C_COUNT=$(find "$SRC/libnetdata/netipc/include/netipc" "$SRC/libnetdata/netipc/src" -type f | wc -l)
-RUST_COUNT=$(find "$RUST_SRC/src" -type f | wc -l)
-GO_COUNT=$(find "$GO_SRC/pkg" -type f | wc -l)
+C_COUNT=$(find "$SRC/libnetdata/netipc/include/netipc" "$SRC/libnetdata/netipc/src" -type f \( -name '*.c' -o -name '*.h' \) | wc -l)
+RUST_COUNT=$(find "$RUST_SRC/src" -type f -name '*.rs' | wc -l)
+GO_COUNT=$(find "$GO_SRC/pkg/netipc" -type f -name '*.go' | wc -l)
 echo -e "${GREEN}Done.${NC} Vendored ${C_COUNT} C files, ${RUST_COUNT} Rust files, ${GO_COUNT} Go files."
 echo ""
 
 # ── Post-vendor instructions ─────────────────────────────────────────
-GO_SRC_MODULE=$(head -1 "$GO_SRC/go.mod" | awk '{print $2}')
-GO_DST_MODULE=$(head -1 "$GO_DST/go.mod" 2>/dev/null | awk '{print $2}')
+GO_SRC_MODULE=$(awk '$1=="module"{print $2; exit}' "$GO_SRC/go.mod")
+if [ -z "$GO_SRC_MODULE" ]; then
+    echo -e >&2 "${RED}[ERROR]${NC} Invalid go.mod: could not find module path in $GO_SRC/go.mod"
+    exit 1
+fi
+
+GO_DST_MODULE=""
+if [ -f "$GO_DST/go.mod" ]; then
+    GO_DST_MODULE=$(awk '$1=="module"{print $2; exit}' "$GO_DST/go.mod")
+    if [ -z "$GO_DST_MODULE" ]; then
+        echo -e "${YELLOW}[WARN]${NC} Could not parse module path from $GO_DST/go.mod; skipping auto import-path suggestion"
+    fi
+fi
 
 echo -e "${YELLOW}=== Next steps ===${NC}"
 echo ""
@@ -123,6 +139,7 @@ echo "  1. Fix Go import paths:"
 if [ -n "$GO_DST_MODULE" ] && [ "$GO_SRC_MODULE" != "$GO_DST_MODULE" ]; then
     echo -e "     ${GRAY}cd $DST${NC}"
     echo -e "     ${GRAY}find src/go/pkg/netipc -name '*.go' -exec sed -i 's|${GO_SRC_MODULE}|${GO_DST_MODULE}|g' {} +${NC}"
+    echo -e "     ${GRAY}git diff -- src/go/pkg/netipc${NC}"
 else
     echo -e "     ${GRAY}(check if Go module path differs between repos and sed-replace)${NC}"
 fi

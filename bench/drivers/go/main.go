@@ -15,7 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -67,7 +67,10 @@ func cacheHashName(name string) uint32 {
 func cpuNS() uint64 {
 	var ts syscall.Timespec
 	// CLOCK_PROCESS_CPUTIME_ID = 2 on Linux
-	_, _, _ = syscall.Syscall(syscall.SYS_CLOCK_GETTIME, 2, uintptr(unsafe.Pointer(&ts)), 0) // #nosec G103 -- clock_gettime requires passing a Timespec pointer.
+	_, _, errno := syscall.Syscall(syscall.SYS_CLOCK_GETTIME, 2, uintptr(unsafe.Pointer(&ts)), 0) // #nosec G103 -- clock_gettime requires passing a Timespec pointer.
+	if errno != 0 {
+		return 0
+	}
 	if ts.Sec < 0 || ts.Nsec < 0 {
 		return 0
 	}
@@ -161,7 +164,7 @@ func (lr *latencyRecorder) percentile(pct float64) uint64 {
 	if len(lr.samples) == 0 {
 		return 0
 	}
-	sort.Slice(lr.samples, func(i, j int) bool { return lr.samples[i] < lr.samples[j] })
+	slices.Sort(lr.samples)
 	idx := int(pct / 100.0 * float64(len(lr.samples)-1))
 	if idx >= len(lr.samples) {
 		idx = len(lr.samples) - 1
@@ -291,7 +294,7 @@ func initSnapshotTemplate() bool {
 
 	snapshotNames = make([][]byte, 16)
 	snapshotPaths = make([][]byte, 16)
-	for i := uint32(0); i < 16; i++ {
+	for i := range uint32(16) {
 		name := fmt.Sprintf("cgroup-%d", i)
 		path := fmt.Sprintf("/sys/fs/cgroup/bench/cg-%d", i)
 		snapshotNames[i] = []byte(name)
@@ -313,7 +316,7 @@ func snapshotHandler() cgroups.Handler {
 				return false
 			}
 			builder.SetHeader(1, atomic.AddUint64(&snapshotGen, 1))
-			for i := uint32(0); i < 16; i++ {
+			for i := range uint32(16) {
 				if err := builder.Add(1000+i, 0, i%2, snapshotNames[i], snapshotPaths[i]); err != nil {
 					return false
 				}
@@ -426,7 +429,7 @@ func runBatchPingPongClient(runDir, service string, profiles uint32, durationSec
 	cfg := batchClientConfig(profiles)
 	session, err := posix.Connect(runDir, service, &cfg)
 	if err != nil {
-		for i := 0; i < 200; i++ {
+		for range 200 {
 			time.Sleep(10 * time.Millisecond)
 			session, err = posix.Connect(runDir, service, &cfg)
 			if err == nil {
@@ -444,7 +447,7 @@ func runBatchPingPongClient(runDir, service string, profiles uint32, durationSec
 	var shm *posix.ShmContext
 	if session.SelectedProfile == protocol.ProfileSHMHybrid ||
 		session.SelectedProfile == protocol.ProfileSHMFutex {
-		for i := 0; i < 200; i++ {
+		for range 200 {
 			shmCtx, serr := posix.ShmClientAttach(runDir, service, session.SessionID)
 			if serr == nil {
 				shm = shmCtx
@@ -490,7 +493,7 @@ func runBatchPingPongClient(runDir, service string, profiles uint32, durationSec
 		bb.Reset(reqBuf, batchSize)
 
 		buildOK := true
-		for i := uint32(0); i < batchSize; i++ {
+		for i := range batchSize {
 			val := counter + uint64(i)
 			protocol.IncrementEncode(val, itemBuf)
 			expected[i] = val + 1
@@ -578,7 +581,7 @@ func runBatchPingPongClient(runDir, service string, profiles uint32, durationSec
 					batchOK = false
 				}
 			} else {
-				for i := uint32(0); i < batchSize; i++ {
+				for i := range batchSize {
 					item, gerr := protocol.BatchItemGet(respPayload, batchSize, i)
 					if gerr != nil {
 						errors++
@@ -635,7 +638,7 @@ func runBatchPingPongClient(runDir, service string, profiles uint32, durationSec
 					batchOK = false
 				}
 			} else {
-				for i := uint32(0); i < batchSize; i++ {
+				for i := range batchSize {
 					item, gerr := protocol.BatchItemGet(payload, batchSize, i)
 					if gerr != nil {
 						errors++
@@ -693,7 +696,7 @@ func runPipelineClient(runDir, service string, durationSec int, targetRPS uint64
 	cfg := clientConfig(profileUDS)
 	session, err := posix.Connect(runDir, service, &cfg)
 	if err != nil {
-		for i := 0; i < 200; i++ {
+		for range 200 {
 			time.Sleep(10 * time.Millisecond)
 			session, err = posix.Connect(runDir, service, &cfg)
 			if err == nil {
@@ -727,7 +730,7 @@ func runPipelineClient(runDir, service string, durationSec int, targetRPS uint64
 
 		// Send `depth` requests with unique message IDs
 		sendOK := true
-		for d := 0; d < depth; d++ {
+		for d := range depth {
 			val := counter + uint64(d)
 			binary.NativeEndian.PutUint64(reqPayload[:], val)
 
@@ -753,7 +756,7 @@ func runPipelineClient(runDir, service string, durationSec int, targetRPS uint64
 		}
 
 		// Receive `depth` responses
-		for d := 0; d < depth; d++ {
+		for d := range depth {
 			_, payload, rerr := session.Receive(recvBuf)
 			if rerr != nil {
 				errors++
@@ -812,7 +815,7 @@ func runPipelineBatchClient(runDir, service string, durationSec int, targetRPS u
 	cfg := batchClientConfig(profileUDS)
 	session, err := posix.Connect(runDir, service, &cfg)
 	if err != nil {
-		for i := 0; i < 200; i++ {
+		for range 200 {
 			time.Sleep(10 * time.Millisecond)
 			session, err = posix.Connect(runDir, service, &cfg)
 			if err == nil {
@@ -852,14 +855,14 @@ func runPipelineBatchClient(runDir, service string, durationSec int, targetRPS u
 
 		// Build and send `depth` batch requests
 		sendOK := true
-		for d := 0; d < depth; d++ {
+		for d := range depth {
 			bs := randomBatchSize(&rng)
 			batchSizes[d] = bs
 
 			var bb protocol.BatchBuilder
 			bb.Reset(reqBufs[d], bs)
 
-			for i := uint32(0); i < bs; i++ {
+			for i := range bs {
 				protocol.IncrementEncode(counter+uint64(i), itemBuf)
 				if err := bb.Add(itemBuf); err != nil {
 					sendOK = false
@@ -897,7 +900,7 @@ func runPipelineBatchClient(runDir, service string, durationSec int, targetRPS u
 		}
 
 		// Receive `depth` batch responses
-		for d := 0; d < depth; d++ {
+		for d := range depth {
 			_, _, rerr := session.Receive(recvBuf)
 			if rerr != nil {
 				errors++
@@ -941,7 +944,7 @@ func runPingPongClient(runDir, service string, profiles uint32, durationSec int,
 	session, err := posix.Connect(runDir, service, &cfg)
 	if err != nil {
 		// Retry
-		for i := 0; i < 200; i++ {
+		for range 200 {
 			time.Sleep(10 * time.Millisecond)
 			session, err = posix.Connect(runDir, service, &cfg)
 			if err == nil {
@@ -959,7 +962,7 @@ func runPingPongClient(runDir, service string, profiles uint32, durationSec int,
 	var shm *posix.ShmContext
 	if session.SelectedProfile == protocol.ProfileSHMHybrid ||
 		session.SelectedProfile == protocol.ProfileSHMFutex {
-		for i := 0; i < 200; i++ {
+		for range 200 {
 			shmCtx, serr := posix.ShmClientAttach(runDir, service, session.SessionID)
 			if serr == nil {
 				shm = shmCtx
@@ -1093,7 +1096,7 @@ func runPingPongClient(runDir, service string, profiles uint32, durationSec int,
 func runSnapshotClient(runDir, service string, profiles uint32, durationSec int, targetRPS uint64, scenario, serverLang string) int {
 	client := cgroups.NewClient(runDir, service, typedClientConfig(profiles))
 
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		client.Refresh()
 		if client.Ready() {
 			break
@@ -1315,8 +1318,8 @@ func runLookupMethodBench(durationSec int, scenario string, targetRPS uint64) in
 
 	paths := make([][]byte, itemCount)
 	pids := make([]uint32, itemCount)
-	for i := 0; i < itemCount; i++ {
-		paths[i] = []byte(fmt.Sprintf("/sys/fs/cgroup/bench/cg-%03d", i))
+	for i := range itemCount {
+		paths[i] = fmt.Appendf(nil, "/sys/fs/cgroup/bench/cg-%03d", i)
 		pids[i] = uint32(1000 + i)
 	}
 
