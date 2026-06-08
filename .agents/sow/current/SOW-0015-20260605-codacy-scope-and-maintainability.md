@@ -861,6 +861,49 @@ Validation and benchmark evidence:
   - `git diff --check`: passed.
   - `cd src/go && go test -count=1 ./pkg/netipc/...`: passed.
 
+### 2026-06-08 - Netdata PR Sonar Duplication Refresh
+
+Fresh Netdata PR #22649 review evidence:
+
+- GitHub review state for `netdata/netdata#22649` at head `9e7474eded`:
+  - 10 review threads total.
+  - 9 review threads resolved.
+  - 1 open review thread at `src/go/pkg/netipc/transport/internal/framing/handshake.go`.
+- The open handshake thread was verified against the checked-in protocol contract and implementations:
+  - `docs/level1-wire-envelope.md` says a client request payload proposal above `1 MiB` is rejected with `LIMIT_EXCEEDED`; accepted request payload proposals are echoed unchanged.
+  - C POSIX, C Windows, Rust POSIX, Rust Windows, and Go already implement that same contract.
+  - No code change was made to this contract in this increment.
+- SonarCloud PR API evidence for `netdata/netdata#22649`:
+  - open issues: 0.
+  - open security hotspots: 0.
+  - Quality Gate failure source is new-code duplication, not Sonar issue findings.
+  - New duplicated lines: 1024.
+  - New duplicated blocks: 48.
+  - New duplicated line density: 5.903378300472731%, above the required 3% gate.
+
+Implemented SDK follow-up:
+
+- Moved duplicated Go POSIX/Windows handshake flow into shared framing helpers:
+  - `ClientHandshake`
+  - `ServerHandshake`
+  - platform files keep only socket/pipe I/O and session construction.
+- Moved duplicated Go POSIX/Windows receive and send session orchestration into shared framing helpers:
+  - `SessionReceive`
+  - `SessionSend`
+  - platform files keep only raw packet send/receive details.
+- Moved duplicated typed-service transport configuration conversion into `service/internal/transportconfig`.
+- Moved duplicated raw-service server initialization, worker-slot handling, accept retry, and session-worker launch into shared raw-service helpers.
+- Preserved platform-specific behavior:
+  - POSIX UDS and Windows Named Pipe raw I/O remain in platform files.
+  - SHM preparation/finalization remains platform-specific.
+  - request-payload handshake negotiation remains unchanged.
+
+Validation for this increment:
+
+- `cd src/go && go test -count=1 ./pkg/netipc/...`: passed.
+- `cd src/go && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -run '^$' ./pkg/netipc/transport/windows ./pkg/netipc/service/raw ./pkg/netipc/service/apps_lookup ./pkg/netipc/service/cgroups_lookup ./pkg/netipc/service/cgroups_snapshot`: passed.
+- `git diff --check`: passed.
+
 ## Validation
 
 Acceptance criteria evidence:
@@ -877,6 +920,7 @@ Acceptance criteria evidence:
 - Netdata PR #22649 SonarCloud security hotspots for C string/path copying were verified and addressed in the SDK before re-vendoring.
 - Go apps/cgroups lookup unknown codec paths now have canonical fast paths and regression tests.
 - POSIX and Windows benchmark runners now distinguish floor/correctness failures from scheduler-stability noise using documented repeated-sample policies.
+- Netdata PR #22649 SonarCloud duplication gate was rechecked; the current SDK increment removes duplicated Go transport/service flow before re-vendoring.
 
 Tests or equivalent validation:
 
@@ -894,6 +938,8 @@ Tests or equivalent validation:
 - `codacy-analysis analyze --files ... --output-format json`: 0 issues; known local Revive adapter invocation error remains.
 - `bash -n tests/run-posix-bench.sh tests/generate-benchmarks-posix.sh tests/run-windows-bench.sh tests/generate-benchmarks-windows.sh`: passed on 2026-06-08.
 - `cd src/go && go test -count=1 ./pkg/netipc/...`: passed on 2026-06-08.
+- `cd src/go && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -run '^$' ./pkg/netipc/transport/windows ./pkg/netipc/service/raw ./pkg/netipc/service/apps_lookup ./pkg/netipc/service/cgroups_lookup ./pkg/netipc/service/cgroups_snapshot`: passed on 2026-06-08.
+- `git diff --check`: passed on 2026-06-08 after the Go duplication-reduction increment.
 
 Real-use evidence:
 
