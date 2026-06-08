@@ -904,6 +904,46 @@ Validation for this increment:
 - `cd src/go && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -run '^$' ./pkg/netipc/transport/windows ./pkg/netipc/service/raw ./pkg/netipc/service/apps_lookup ./pkg/netipc/service/cgroups_lookup ./pkg/netipc/service/cgroups_snapshot`: passed.
 - `git diff --check`: passed.
 
+### 2026-06-08 - Netdata PR Sonar C Service Duplication Refresh
+
+Fresh Netdata PR #22649 SonarCloud evidence after vendoring plugin-ipc commit `f5eca1e`:
+
+- SonarCloud analyzed Netdata PR head `08fcd6594fec0f5f3fa323946e35cf7354f0fe0f`.
+- SonarCloud new-code duplication improved from 1024 lines / 5.903378300472731% to:
+  - new duplicated lines: 666.
+  - new duplicated blocks: 33.
+  - new duplicated line density: 3.768247142695485%.
+- The remaining Quality Gate failure is still `new_duplicated_lines_density > 3%`.
+- Top remaining production contributors are C POSIX/Windows service pairs:
+  - `netipc_service_posix_server.c`: 61 duplicated lines.
+  - `netipc_service_win_server.c`: 61 duplicated lines.
+  - `netipc_service_posix_client.c`: 33 duplicated lines.
+  - `netipc_service_win_client.c`: 33 duplicated lines.
+  - `netipc_service_posix_client_call.c`: 32 duplicated lines.
+  - `netipc_service_win_client_call.c`: 32 duplicated lines.
+
+Implemented SDK follow-up:
+
+- Added common C service helpers for:
+  - client/server transport field conversion from typed service config.
+  - server base field initialization.
+  - server session-slot allocation.
+- Updated POSIX and Windows service client/server files to reuse those helpers.
+- Preserved platform-specific behavior:
+  - POSIX and Windows listener creation remains platform-specific.
+  - POSIX mutex and Windows critical-section setup remains platform-specific.
+  - POSIX UDS, POSIX SHM, Windows Named Pipe, and Windows SHM code paths remain platform-specific.
+  - No protocol, wire-format, or runtime contract changed.
+
+Validation for this increment:
+
+- `git diff --check`: passed.
+- `cmake --build build`: passed.
+- `/usr/bin/ctest --test-dir build --output-on-failure`: 46/46 tests passed.
+- Win11 MSYS focused C service validation from a temporary copy:
+  - `cmake --build build-msys --target test_win_service test_win_service_payload_limits test_win_service_extra`: passed.
+  - `/usr/bin/ctest --output-on-failure -R '^(test_win_service|test_win_service_payload_limits|test_win_service_extra)$'`: 3/3 tests passed.
+
 ## Validation
 
 Acceptance criteria evidence:
@@ -921,6 +961,7 @@ Acceptance criteria evidence:
 - Go apps/cgroups lookup unknown codec paths now have canonical fast paths and regression tests.
 - POSIX and Windows benchmark runners now distinguish floor/correctness failures from scheduler-stability noise using documented repeated-sample policies.
 - Netdata PR #22649 SonarCloud duplication gate was rechecked; the current SDK increment removes duplicated Go transport/service flow before re-vendoring.
+- Netdata PR #22649 SonarCloud duplication gate was rechecked after the Go increment; the remaining production C service duplication was reduced through shared service helpers.
 
 Tests or equivalent validation:
 
@@ -940,6 +981,9 @@ Tests or equivalent validation:
 - `cd src/go && go test -count=1 ./pkg/netipc/...`: passed on 2026-06-08.
 - `cd src/go && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -run '^$' ./pkg/netipc/transport/windows ./pkg/netipc/service/raw ./pkg/netipc/service/apps_lookup ./pkg/netipc/service/cgroups_lookup ./pkg/netipc/service/cgroups_snapshot`: passed on 2026-06-08.
 - `git diff --check`: passed on 2026-06-08 after the Go duplication-reduction increment.
+- `cmake --build build`: passed on 2026-06-08 after the C service duplication-reduction increment.
+- `/usr/bin/ctest --test-dir build --output-on-failure`: 46/46 passed on 2026-06-08 after the C service duplication-reduction increment.
+- Win11 MSYS focused C service validation: 3/3 passed on 2026-06-08 after the C service duplication-reduction increment.
 
 Real-use evidence:
 
