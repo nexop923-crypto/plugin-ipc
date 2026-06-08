@@ -944,6 +944,36 @@ Validation for this increment:
   - `cmake --build build-msys --target test_win_service test_win_service_payload_limits test_win_service_extra`: passed.
   - `/usr/bin/ctest --output-on-failure -R '^(test_win_service|test_win_service_payload_limits|test_win_service_extra)$'`: 3/3 tests passed.
 
+Fresh Netdata PR #22649 SonarCloud evidence after vendoring plugin-ipc commit `f5529bb`:
+
+- SonarCloud analyzed Netdata PR head `882a44d1b6`.
+- SonarCloud new-code duplication improved from 666 lines / 3.768247142695485% to:
+  - new duplicated line density: 3.1%.
+- The remaining Quality Gate failure is still `new_duplicated_lines_density > 3%`.
+- Top remaining low-risk production contributor pair:
+  - `netipc_service_posix_client_call.c`: 32 duplicated lines.
+  - `netipc_service_win_client_call.c`: 32 duplicated lines.
+
+Implemented SDK follow-up:
+
+- Added common C service helpers for:
+  - preparing client SHM request frames from the reusable send buffer.
+  - parsing client SHM response frames into header/payload views.
+- Updated POSIX and Windows client-call files to reuse those helpers while leaving UDS, Named Pipe, POSIX SHM send/receive, and Windows SHM send/receive calls platform-specific.
+- Preserved behavior:
+  - overflow handling still grows learned request capacity through `nipc_service_common_client_note_request_capacity()`.
+  - SHM message encoding still uses the same header fields and client send buffer.
+  - platform-specific transport error mapping remains in platform files.
+
+Validation for this increment:
+
+- `git diff --check`: passed.
+- `cmake --build build`: passed.
+- `/usr/bin/ctest --test-dir build --output-on-failure`: 46/46 tests passed.
+- Win11 MSYS focused C service validation from a temporary copy:
+  - `cmake --build build --target test_win_service test_win_service_payload_limits test_win_service_extra`: passed.
+  - `/usr/bin/ctest --output-on-failure -R '^(test_win_service|test_win_service_payload_limits|test_win_service_extra)$'`: 3/3 tests passed.
+
 ## Validation
 
 Acceptance criteria evidence:
@@ -984,6 +1014,9 @@ Tests or equivalent validation:
 - `cmake --build build`: passed on 2026-06-08 after the C service duplication-reduction increment.
 - `/usr/bin/ctest --test-dir build --output-on-failure`: 46/46 passed on 2026-06-08 after the C service duplication-reduction increment.
 - Win11 MSYS focused C service validation: 3/3 passed on 2026-06-08 after the C service duplication-reduction increment.
+- `cmake --build build`: passed on 2026-06-08 after the C client-call SHM helper increment.
+- `/usr/bin/ctest --test-dir build --output-on-failure`: 46/46 passed on 2026-06-08 after the C client-call SHM helper increment.
+- Win11 MSYS focused C service validation: 3/3 passed on 2026-06-08 after the C client-call SHM helper increment.
 
 Real-use evidence:
 
