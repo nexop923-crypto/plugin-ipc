@@ -23,6 +23,11 @@ INPUT_CSV="${1:-${ROOT_DIR}/benchmarks-posix.csv}"
 OUTPUT_MD="${2:-${ROOT_DIR}/benchmarks-posix.md}"
 EXPECTED_HEADER="scenario,client,server,target_rps,throughput,p50_us,p95_us,p99_us,client_cpu_pct,server_cpu_pct,total_cpu_pct"
 EXPECTED_TOTAL_ROWS=297
+RUNNER_DEFAULT_FIXED_DURATION=5
+RUNNER_DEFAULT_MAX_DURATION=10
+RUNNER_DEFAULT_FLOOR_RETRY_SAMPLES=3
+RUNNER_DEFAULT_FLOOR_RETRY_DURATION=20
+RUNNER_DEFAULT_FLOOR_RETRY_MAX_RATIO=1.35
 VALIDATION_FAILED=0
 FLOOR_FAILED=0
 CSV_FILE=""
@@ -423,6 +428,17 @@ emit_floor_summary() {
     echo ""
 }
 
+emit_methodology() {
+    echo "## Methodology"
+    echo ""
+    echo "- Fixed-rate rows use ${RUNNER_DEFAULT_FIXED_DURATION}s samples by default."
+    echo "- Max-throughput rows use ${RUNNER_DEFAULT_MAX_DURATION}s samples by default."
+    echo "- The script CLI duration controls fixed-rate rows; \`NIPC_BENCH_MAX_DURATION\` controls max-throughput rows."
+    echo "- Rows that miss an enforced max-throughput floor are retried before publication: ${RUNNER_DEFAULT_FLOOR_RETRY_SAMPLES} samples x ${RUNNER_DEFAULT_FLOOR_RETRY_DURATION}s by default, published only when the retry median meets the same floor and retry max/min throughput ratio is <= ${RUNNER_DEFAULT_FLOOR_RETRY_MAX_RATIO}."
+    echo "- Retry diagnostics, when used, are written next to the CSV as \`*.floor-retries.csv\`."
+    echo ""
+}
+
 generate_md() {
     local tmp_file="${OUTPUT_MD}.tmp.$$"
 
@@ -449,6 +465,7 @@ generate_md() {
         emit_scenario_section "UDS Pipeline+Batch" "uds-pipeline-batch-d16" 0
         emit_lookup_section
         emit_lookup_method_section
+        emit_methodology
         emit_floor_summary
     } > "$tmp_file"
 

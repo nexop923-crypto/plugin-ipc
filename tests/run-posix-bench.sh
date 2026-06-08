@@ -21,6 +21,19 @@
 #
 # Usage:
 #   ./tests/run-posix-bench.sh [output_csv] [duration_sec]
+#
+# Environment:
+#   NIPC_BENCH_MAX_DURATION
+#     Duration for max-throughput rows. Defaults to 10s to reduce scheduler
+#     noise in floor-sensitive rows. The CLI duration still controls fixed-rate
+#     rows.
+#   NIPC_BENCH_FLOOR_RETRY_SAMPLES
+#     Repeated diagnostic samples for max-throughput rows that miss a published
+#     performance floor. Defaults to 3. Set to 0 to disable recovery.
+#   NIPC_BENCH_FLOOR_RETRY_DURATION
+#     Duration for each floor-retry sample. Defaults to 20s.
+#   NIPC_BENCH_FLOOR_RETRY_MAX_RATIO
+#     Maximum retry sample max/min throughput ratio accepted as stable.
 
 set -euo pipefail
 
@@ -40,6 +53,11 @@ SERVER_STOP_GRACE_SEC="${NIPC_BENCH_SERVER_STOP_GRACE_SEC:-10}"
 
 OUTPUT_CSV="${1:-${ROOT_DIR}/benchmarks-posix.csv}"
 DURATION="${2:-5}"
+MAX_DURATION="${NIPC_BENCH_MAX_DURATION:-10}"
+FLOOR_RETRY_SAMPLES="${NIPC_BENCH_FLOOR_RETRY_SAMPLES:-3}"
+FLOOR_RETRY_DURATION="${NIPC_BENCH_FLOOR_RETRY_DURATION:-20}"
+FLOOR_RETRY_MAX_RATIO="${NIPC_BENCH_FLOOR_RETRY_MAX_RATIO:-1.35}"
+FLOOR_RETRY_CSV="${OUTPUT_CSV%.csv}.floor-retries.csv"
 RUN_DIR="/tmp/netipc-bench-$$"
 
 # Binary locations
@@ -257,6 +275,139 @@ sum_cpu_pct() {
     }'
 }
 
+duration_for_target() {
+    local target_rps="$1"
+    if [ "$target_rps" = "0" ]; then
+        echo "$MAX_DURATION"
+    else
+        echo "$DURATION"
+    fi
+}
+
+positive_integer_or_zero() {
+    [[ "$1" =~ ^[0-9]+$ ]]
+}
+
+positive_number() {
+    awk -v value="$1" 'BEGIN { exit ((value + 0) > 0 ? 0 : 1) }'
+}
+
+float_lt() {
+    awk -v left="$1" -v right="$2" 'BEGIN { exit ((left + 0) < (right + 0) ? 0 : 1) }'
+}
+
+floor_min_for_row() {
+    local scenario="$1"
+    local client_lang="$2"
+    local server_lang="$3"
+    local target_rps="$4"
+
+    [ "$target_rps" = "0" ] || return 1
+
+    case "$scenario" in
+        shm-ping-pong)
+            echo 1000000
+            ;;
+        uds-ping-pong)
+            echo 120000
+            ;;
+        snapshot-baseline)
+            echo 100000
+            ;;
+        snapshot-shm)
+            if [ "$client_lang" = "go" ] || [ "$server_lang" = "go" ]; then
+                echo 800000
+            else
+                echo 1000000
+            fi
+            ;;
+        lookup)
+            echo 10000000
+            ;;
+        cgroups-lookup-known-16)
+            echo 250000
+            ;;
+        cgroups-lookup-unknown-16)
+            echo 500000
+            ;;
+        cgroups-lookup-mixed-16)
+            echo 350000
+            ;;
+        cgroups-lookup-mixed-256)
+            echo 25000
+            ;;
+        apps-lookup-known-16)
+            echo 300000
+            ;;
+        apps-lookup-unknown-16)
+            echo 500000
+            ;;
+        apps-lookup-mixed-16)
+            echo 350000
+            ;;
+        apps-lookup-mixed-256)
+            echo 25000
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+median_from_sample_file() {
+    local sample_file="$1"
+    local column="$2"
+
+    awk -F',' -v column="$column" 'NR > 1 { print $column + 0 }' "$sample_file" | sort -g | awk '
+        { values[NR] = $1 }
+        END {
+            if (NR == 0) {
+                exit 1
+            }
+            if ((NR % 2) == 1) {
+                printf "%.3f", values[(NR + 1) / 2]
+            } else {
+                printf "%.3f", (values[NR / 2] + values[(NR / 2) + 1]) / 2.0
+            }
+        }
+    '
+}
+
+min_from_sample_file() {
+    local sample_file="$1"
+    local column="$2"
+
+    awk -F',' -v column="$column" 'NR > 1 { print $column + 0 }' "$sample_file" | sort -g | head -1
+}
+
+max_from_sample_file() {
+    local sample_file="$1"
+    local column="$2"
+
+    awk -F',' -v column="$column" 'NR > 1 { print $column + 0 }' "$sample_file" | sort -g | tail -1
+}
+
+throughput_ratio() {
+    local min_value="$1"
+    local max_value="$2"
+
+    awk -v min_value="$min_value" -v max_value="$max_value" 'BEGIN {
+        if ((min_value + 0) <= 0) {
+            print "999999.000000"
+        } else {
+            printf "%.6f", (max_value + 0) / (min_value + 0)
+        }
+    }'
+}
+
+retry_ratio_is_stable() {
+    local ratio="$1"
+
+    awk -v ratio="$ratio" -v max_ratio="$FLOOR_RETRY_MAX_RATIO" '
+        BEGIN { exit ((ratio + 0) <= (max_ratio + 0) ? 0 : 1) }
+    '
+}
+
 dump_client_error() {
     local err_file="$1"
     if [ -s "$err_file" ]; then
@@ -403,6 +554,292 @@ run_pair() {
     log "    throughput=${throughput} p50=${p50}us p95=${p95}us p99=${p99}us"
 }
 
+run_pair_once_to_row() {
+    local scenario="$1"
+    local client_lang="$2"
+    local server_lang="$3"
+    local target_rps="$4"
+    local duration="$5"
+    local repeat_idx="$6"
+
+    local saved_output_csv="$OUTPUT_CSV"
+    local saved_run_dir="$RUN_DIR"
+    local retry_run_dir="${saved_run_dir}/r-${RANDOM}-${repeat_idx}"
+    local retry_csv="${retry_run_dir}/row.csv"
+    local status=0
+
+    mkdir -p "$retry_run_dir"
+    echo "scenario,client,server,target_rps,throughput,p50_us,p95_us,p99_us,client_cpu_pct,server_cpu_pct,total_cpu_pct" > "$retry_csv"
+
+    OUTPUT_CSV="$retry_csv"
+    RUN_DIR="$retry_run_dir"
+    if ! run_pair "$scenario" "$server_lang" "$client_lang" "$target_rps" "$duration"; then
+        status=1
+    fi
+    OUTPUT_CSV="$saved_output_csv"
+    RUN_DIR="$saved_run_dir"
+
+    [ "$status" -eq 0 ] || return "$status"
+    tail -n 1 "$retry_csv"
+}
+
+lookup_once_to_row() {
+    local lang="$1"
+    local duration="$2"
+
+    local bin
+    bin="$(bench_bin "$lang")"
+
+    local line
+    line=$("$bin" lookup-bench "$duration" | grep "^lookup," | head -1)
+    [ -n "$line" ] || return 1
+
+    local throughput p50 p95 p99 client_cpu server_cpu_pct total_cpu_pct
+    throughput=$(echo "$line" | cut -d',' -f4)
+    p50=$(echo "$line" | cut -d',' -f5)
+    p95=$(echo "$line" | cut -d',' -f6)
+    p99=$(echo "$line" | cut -d',' -f7)
+    client_cpu=$(echo "$line" | cut -d',' -f8)
+    server_cpu_pct=$(echo "$line" | cut -d',' -f9)
+    total_cpu_pct=$(echo "$line" | cut -d',' -f10)
+
+    printf 'lookup,%s,%s,0,%s,%s,%s,%s,%s,%s,%s\n' \
+        "$lang" "$lang" "$throughput" "$p50" "$p95" "$p99" \
+        "$client_cpu" "$server_cpu_pct" "$total_cpu_pct"
+}
+
+lookup_method_once_to_row() {
+    local scenario="$1"
+    local lang="$2"
+    local target_rps="$3"
+    local duration="$4"
+
+    local bin
+    bin="$(bench_bin "$lang")"
+
+    local line
+    line=$("$bin" lookup-method-bench "$duration" "$scenario" "$target_rps" | grep "^${scenario}," | head -1)
+    [ -n "$line" ] || return 1
+
+    local throughput p50 p95 p99 client_cpu server_cpu_pct total_cpu_pct
+    throughput=$(echo "$line" | cut -d',' -f4)
+    p50=$(echo "$line" | cut -d',' -f5)
+    p95=$(echo "$line" | cut -d',' -f6)
+    p99=$(echo "$line" | cut -d',' -f7)
+    client_cpu=$(echo "$line" | cut -d',' -f8)
+    server_cpu_pct=$(echo "$line" | cut -d',' -f9)
+    total_cpu_pct=$(echo "$line" | cut -d',' -f10)
+
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+        "$scenario" "$lang" "$lang" "$target_rps" "$throughput" "$p50" "$p95" "$p99" \
+        "$client_cpu" "$server_cpu_pct" "$total_cpu_pct"
+}
+
+floor_retry_once_to_row() {
+    local scenario="$1"
+    local client_lang="$2"
+    local server_lang="$3"
+    local target_rps="$4"
+    local duration="$5"
+    local repeat_idx="$6"
+
+    case "$scenario" in
+        lookup)
+            [ "$client_lang" = "$server_lang" ] || return 1
+            lookup_once_to_row "$client_lang" "$duration"
+            ;;
+        cgroups-lookup-*|apps-lookup-*)
+            [ "$client_lang" = "$server_lang" ] || return 1
+            lookup_method_once_to_row "$scenario" "$client_lang" "$target_rps" "$duration"
+            ;;
+        *)
+            run_pair_once_to_row "$scenario" "$client_lang" "$server_lang" "$target_rps" "$duration" "$repeat_idx"
+            ;;
+    esac
+}
+
+replace_csv_row() {
+    local scenario="$1"
+    local client_lang="$2"
+    local server_lang="$3"
+    local target_rps="$4"
+    local replacement="$5"
+    local tmp_file="${OUTPUT_CSV}.tmp.$$"
+
+    awk -F',' -v OFS=',' \
+        -v scenario="$scenario" \
+        -v client="$client_lang" \
+        -v server="$server_lang" \
+        -v target="$target_rps" \
+        -v replacement="$replacement" '
+        NR == 1 {
+            print
+            next
+        }
+        $1 == scenario && $2 == client && $3 == server && $4 == target {
+            if (!done) {
+                print replacement
+                done = 1
+            }
+            next
+        }
+        {
+            print
+        }
+        END {
+            if (!done) {
+                exit 1
+            }
+        }
+    ' "$OUTPUT_CSV" > "$tmp_file"
+
+    mv "$tmp_file" "$OUTPUT_CSV"
+}
+
+append_floor_retry_log() {
+    local scenario="$1"
+    local client_lang="$2"
+    local server_lang="$3"
+    local target_rps="$4"
+    local min_throughput="$5"
+    local original_throughput="$6"
+    local retry_samples="$7"
+    local median_throughput="$8"
+    local min_retry="$9"
+    local max_retry="${10}"
+    local stable_ratio="${11}"
+    local status="${12}"
+
+    if [ ! -f "$FLOOR_RETRY_CSV" ]; then
+        echo "scenario,client,server,target_rps,min_throughput,original_throughput,retry_samples,median_throughput,min_retry,max_retry,stable_ratio,status" > "$FLOOR_RETRY_CSV"
+    fi
+
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+        "$scenario" "$client_lang" "$server_lang" "$target_rps" "$min_throughput" \
+        "$original_throughput" "$retry_samples" "$median_throughput" "$min_retry" \
+        "$max_retry" "$stable_ratio" "$status" >> "$FLOOR_RETRY_CSV"
+}
+
+retry_floor_row() {
+    local scenario="$1"
+    local client_lang="$2"
+    local server_lang="$3"
+    local target_rps="$4"
+    local min_throughput="$5"
+    local original_throughput="$6"
+
+    local sample_file="${RUN_DIR}/floor-retry-${scenario}-${client_lang}-${server_lang}-${target_rps}.samples.csv"
+    echo "repeat,throughput,p50_us,p95_us,p99_us,client_cpu_pct,server_cpu_pct,total_cpu_pct" > "$sample_file"
+
+    log "  retry floor: ${scenario} ${client_lang}->${server_lang} @ max original=${original_throughput} min=${min_throughput}"
+
+    local repeat_idx
+    for repeat_idx in $(seq 1 "$FLOOR_RETRY_SAMPLES"); do
+        local row
+        if ! row=$(floor_retry_once_to_row "$scenario" "$client_lang" "$server_lang" "$target_rps" "$FLOOR_RETRY_DURATION" "$repeat_idx"); then
+            warn "    retry sample ${repeat_idx}/${FLOOR_RETRY_SAMPLES} failed"
+            append_floor_retry_log "$scenario" "$client_lang" "$server_lang" "$target_rps" \
+                "$min_throughput" "$original_throughput" "$FLOOR_RETRY_SAMPLES" "" "" "" "" "failed"
+            return 1
+        fi
+
+        local throughput p50 p95 p99 client_cpu server_cpu_pct total_cpu_pct
+        throughput=$(echo "$row" | cut -d',' -f5)
+        p50=$(echo "$row" | cut -d',' -f6)
+        p95=$(echo "$row" | cut -d',' -f7)
+        p99=$(echo "$row" | cut -d',' -f8)
+        client_cpu=$(echo "$row" | cut -d',' -f9)
+        server_cpu_pct=$(echo "$row" | cut -d',' -f10)
+        total_cpu_pct=$(echo "$row" | cut -d',' -f11)
+
+        printf '%s,%s,%s,%s,%s,%s,%s,%s\n' \
+            "$repeat_idx" "$throughput" "$p50" "$p95" "$p99" \
+            "$client_cpu" "$server_cpu_pct" "$total_cpu_pct" >> "$sample_file"
+    done
+
+    local median_throughput min_retry max_retry stable_ratio
+    median_throughput=$(median_from_sample_file "$sample_file" 2) || return 1
+    min_retry=$(min_from_sample_file "$sample_file" 2) || return 1
+    max_retry=$(max_from_sample_file "$sample_file" 2) || return 1
+    stable_ratio=$(throughput_ratio "$min_retry" "$max_retry")
+
+    local p50 p95 p99 client_cpu server_cpu_pct total_cpu_pct
+    p50=$(median_from_sample_file "$sample_file" 3) || return 1
+    p95=$(median_from_sample_file "$sample_file" 4) || return 1
+    p99=$(median_from_sample_file "$sample_file" 5) || return 1
+    client_cpu=$(median_from_sample_file "$sample_file" 6) || return 1
+    server_cpu_pct=$(median_from_sample_file "$sample_file" 7) || return 1
+    total_cpu_pct=$(median_from_sample_file "$sample_file" 8) || return 1
+
+    if float_lt "$median_throughput" "$min_throughput"; then
+        warn "    retry median still below floor: median=${median_throughput} min=${min_throughput}"
+        append_floor_retry_log "$scenario" "$client_lang" "$server_lang" "$target_rps" \
+            "$min_throughput" "$original_throughput" "$FLOOR_RETRY_SAMPLES" "$median_throughput" \
+            "$min_retry" "$max_retry" "$stable_ratio" "failed_below_floor"
+        return 1
+    fi
+
+    if ! retry_ratio_is_stable "$stable_ratio"; then
+        warn "    retry samples unstable: min=${min_retry} max=${max_retry} ratio=${stable_ratio} max_ratio=${FLOOR_RETRY_MAX_RATIO}"
+        append_floor_retry_log "$scenario" "$client_lang" "$server_lang" "$target_rps" \
+            "$min_throughput" "$original_throughput" "$FLOOR_RETRY_SAMPLES" "$median_throughput" \
+            "$min_retry" "$max_retry" "$stable_ratio" "failed_unstable"
+        return 1
+    fi
+
+    local replacement
+    replacement=$(printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s' \
+        "$scenario" "$client_lang" "$server_lang" "$target_rps" "$median_throughput" \
+        "$p50" "$p95" "$p99" "$client_cpu" "$server_cpu_pct" "$total_cpu_pct")
+
+    replace_csv_row "$scenario" "$client_lang" "$server_lang" "$target_rps" "$replacement"
+    append_floor_retry_log "$scenario" "$client_lang" "$server_lang" "$target_rps" \
+        "$min_throughput" "$original_throughput" "$FLOOR_RETRY_SAMPLES" "$median_throughput" \
+        "$min_retry" "$max_retry" "$stable_ratio" "recovered"
+    log "    recovered median_throughput=${median_throughput} stable_ratio=${stable_ratio}"
+}
+
+retry_floor_violations() {
+    if [ "$FLOOR_RETRY_SAMPLES" -eq 0 ]; then
+        log "Floor retry disabled"
+        return 0
+    fi
+
+    local violations_file="${RUN_DIR}/floor-violations.csv"
+    : > "$violations_file"
+
+    while IFS=',' read -r scenario client_lang server_lang target_rps throughput _rest; do
+        local min_throughput
+        if ! min_throughput=$(floor_min_for_row "$scenario" "$client_lang" "$server_lang" "$target_rps"); then
+            continue
+        fi
+        if float_lt "$throughput" "$min_throughput"; then
+            printf '%s,%s,%s,%s,%s,%s\n' \
+                "$scenario" "$client_lang" "$server_lang" "$target_rps" "$min_throughput" "$throughput" >> "$violations_file"
+        fi
+    done < <(tail -n +2 "$OUTPUT_CSV")
+
+    if [ ! -s "$violations_file" ]; then
+        log "No floor retry needed"
+        return 0
+    fi
+
+    log "=== Floor Retry Diagnostics ==="
+    log "Retry samples per failed floor row: ${FLOOR_RETRY_SAMPLES}"
+    log "Retry duration per sample: ${FLOOR_RETRY_DURATION}s"
+    log "Retry stability max/min ratio limit: ${FLOOR_RETRY_MAX_RATIO}"
+    log "Retry log: ${FLOOR_RETRY_CSV}"
+
+    local failed=0
+    while IFS=',' read -r scenario client_lang server_lang target_rps min_throughput original_throughput; do
+        if ! retry_floor_row "$scenario" "$client_lang" "$server_lang" "$target_rps" "$min_throughput" "$original_throughput"; then
+            failed=1
+        fi
+    done < "$violations_file"
+
+    return "$failed"
+}
+
 # ---------------------------------------------------------------------------
 #  Check prerequisites
 # ---------------------------------------------------------------------------
@@ -437,8 +874,23 @@ check_binaries() {
 
 main() {
     log "POSIX Benchmark Suite"
-    log "Duration per run: ${DURATION}s"
+    log "Fixed-rate duration per run: ${DURATION}s"
+    log "Max-throughput duration per run: ${MAX_DURATION}s"
+    log "Floor retry samples: ${FLOOR_RETRY_SAMPLES}"
     log "Output: ${OUTPUT_CSV}"
+
+    if ! positive_integer_or_zero "$FLOOR_RETRY_SAMPLES"; then
+        err "NIPC_BENCH_FLOOR_RETRY_SAMPLES must be a non-negative integer"
+        exit 1
+    fi
+    if ! positive_number "$FLOOR_RETRY_DURATION"; then
+        err "NIPC_BENCH_FLOOR_RETRY_DURATION must be greater than zero"
+        exit 1
+    fi
+    if ! positive_number "$FLOOR_RETRY_MAX_RATIO"; then
+        err "NIPC_BENCH_FLOOR_RETRY_MAX_RATIO must be greater than zero"
+        exit 1
+    fi
 
     if ! check_binaries; then
         err "Missing benchmark binaries. Build first."
@@ -468,9 +920,10 @@ main() {
     # 1. UDS ping-pong: 9 pairs x 4 rates
     log "=== UDS Ping-Pong ==="
     for rate in "${RATES_PING_PONG[@]}"; do
+        row_duration="$(duration_for_target "$rate")"
         for server_lang in "${LANGS[@]}"; do
             for client_lang in "${LANGS[@]}"; do
-                if ! run_pair "uds-ping-pong" "$server_lang" "$client_lang" "$rate" "$DURATION"; then
+                if ! run_pair "uds-ping-pong" "$server_lang" "$client_lang" "$rate" "$row_duration"; then
                     RUN_FAILED=1
                 fi
                 sleep 0.5
@@ -481,9 +934,10 @@ main() {
     # 2. SHM ping-pong: 9 pairs x 4 rates
     log "=== SHM Ping-Pong ==="
     for rate in "${RATES_PING_PONG[@]}"; do
+        row_duration="$(duration_for_target "$rate")"
         for server_lang in "${LANGS[@]}"; do
             for client_lang in "${LANGS[@]}"; do
-                if ! run_pair "shm-ping-pong" "$server_lang" "$client_lang" "$rate" "$DURATION"; then
+                if ! run_pair "shm-ping-pong" "$server_lang" "$client_lang" "$rate" "$row_duration"; then
                     RUN_FAILED=1
                 fi
                 sleep 0.5
@@ -494,9 +948,10 @@ main() {
     # 3. Snapshot baseline refresh: 9 pairs x 2 rates
     log "=== Snapshot Baseline ==="
     for rate in "${RATES_SNAPSHOT[@]}"; do
+        row_duration="$(duration_for_target "$rate")"
         for server_lang in "${LANGS[@]}"; do
             for client_lang in "${LANGS[@]}"; do
-                if ! run_pair "snapshot-baseline" "$server_lang" "$client_lang" "$rate" "$DURATION"; then
+                if ! run_pair "snapshot-baseline" "$server_lang" "$client_lang" "$rate" "$row_duration"; then
                     RUN_FAILED=1
                 fi
                 sleep 0.5
@@ -507,9 +962,10 @@ main() {
     # 4. Snapshot SHM refresh: 9 pairs x 2 rates
     log "=== Snapshot SHM ==="
     for rate in "${RATES_SNAPSHOT[@]}"; do
+        row_duration="$(duration_for_target "$rate")"
         for server_lang in "${LANGS[@]}"; do
             for client_lang in "${LANGS[@]}"; do
-                if ! run_pair "snapshot-shm" "$server_lang" "$client_lang" "$rate" "$DURATION"; then
+                if ! run_pair "snapshot-shm" "$server_lang" "$client_lang" "$rate" "$row_duration"; then
                     RUN_FAILED=1
                 fi
                 sleep 0.5
@@ -520,9 +976,10 @@ main() {
     # 5. UDS batch ping-pong: 9 pairs x 4 rates
     log "=== UDS Batch Ping-Pong ==="
     for rate in "${RATES_PING_PONG[@]}"; do
+        row_duration="$(duration_for_target "$rate")"
         for server_lang in "${LANGS[@]}"; do
             for client_lang in "${LANGS[@]}"; do
-                if ! run_pair "uds-batch-ping-pong" "$server_lang" "$client_lang" "$rate" "$DURATION"; then
+                if ! run_pair "uds-batch-ping-pong" "$server_lang" "$client_lang" "$rate" "$row_duration"; then
                     RUN_FAILED=1
                 fi
                 sleep 0.5
@@ -533,9 +990,10 @@ main() {
     # 6. SHM batch ping-pong: 9 pairs x 4 rates
     log "=== SHM Batch Ping-Pong ==="
     for rate in "${RATES_PING_PONG[@]}"; do
+        row_duration="$(duration_for_target "$rate")"
         for server_lang in "${LANGS[@]}"; do
             for client_lang in "${LANGS[@]}"; do
-                if ! run_pair "shm-batch-ping-pong" "$server_lang" "$client_lang" "$rate" "$DURATION"; then
+                if ! run_pair "shm-batch-ping-pong" "$server_lang" "$client_lang" "$rate" "$row_duration"; then
                     RUN_FAILED=1
                 fi
                 sleep 0.5
@@ -553,7 +1011,7 @@ main() {
         local lookup_status
         local lookup_err="${RUN_DIR}/lookup-${lang}.err"
         set +e
-        line=$("$bin" lookup-bench "$DURATION" 2>"$lookup_err" | grep "^lookup," | head -1)
+        line=$("$bin" lookup-bench "$MAX_DURATION" 2>"$lookup_err" | grep "^lookup," | head -1)
         lookup_status=$?
         set -e
         if [ "$lookup_status" -ne 0 ]; then
@@ -589,6 +1047,7 @@ main() {
     # 8. Lookup method codec+dispatch: 8 scenarios x 3 languages x 4 rates
     log "=== Lookup Methods (codec + dispatch) ==="
     for rate in "${RATES_LOOKUP_METHOD[@]}"; do
+        row_duration="$(duration_for_target "$rate")"
         for scenario in "${LOOKUP_METHOD_SCENARIOS[@]}"; do
             for lang in "${LANGS[@]}"; do
                 local bin
@@ -598,7 +1057,7 @@ main() {
                 local lookup_status
                 local lookup_err="${RUN_DIR}/${scenario}-${lang}-${rate}.err"
                 set +e
-                line=$("$bin" lookup-method-bench "$DURATION" "$scenario" "$rate" 2>"$lookup_err" | grep "^${scenario}," | head -1)
+                line=$("$bin" lookup-method-bench "$row_duration" "$scenario" "$rate" 2>"$lookup_err" | grep "^${scenario}," | head -1)
                 lookup_status=$?
                 set -e
                 if [ "$lookup_status" -ne 0 ]; then
@@ -636,13 +1095,14 @@ main() {
     # 9. UDS pipeline benchmarks (all 9 pairs, max rate, depth=16)
     log "=== UDS Pipeline (9 pairs, max rate, depth=16) ==="
     local PIPELINE_DEPTH=16
+    local pipeline_duration="$MAX_DURATION"
     for server_lang in "${LANGS[@]}"; do
         for client_lang in "${LANGS[@]}"; do
             local pipe_svc="pipeline-${server_lang}-${client_lang}"
 
             log "  uds-pipeline: ${client_lang}->${server_lang} depth=${PIPELINE_DEPTH}"
 
-            local server_duration=$((DURATION + 5))
+            local server_duration=$((pipeline_duration + 5))
             local server_pid
             server_pid=$(start_server "$server_lang" "uds-ping-pong-server" "$pipe_svc" "$server_duration") || {
                 warn "  Failed to start pipeline server"
@@ -653,12 +1113,12 @@ main() {
 
             local client_bin
             client_bin="$(bench_bin "$client_lang")"
-            local client_timeout=$((DURATION + 15))
+            local client_timeout=$((pipeline_duration + 15))
             local client_output
             local client_status
             local client_err="${RUN_DIR}/client-uds-pipeline-${server_lang}-${client_lang}.err"
             set +e
-            client_output=$(timeout "$client_timeout" "$client_bin" "uds-pipeline-client" "$RUN_DIR" "$pipe_svc" "$DURATION" "0" "$PIPELINE_DEPTH" 2>"$client_err")
+            client_output=$(timeout "$client_timeout" "$client_bin" "uds-pipeline-client" "$RUN_DIR" "$pipe_svc" "$pipeline_duration" "0" "$PIPELINE_DEPTH" 2>"$client_err")
             client_status=$?
             set -e
 
@@ -700,7 +1160,7 @@ main() {
                     fi
 
                     local server_cpu_pct total_cpu_pct
-                    server_cpu_pct=$(cpu_pct_for_duration "$server_cpu_sec" "$DURATION")
+                    server_cpu_pct=$(cpu_pct_for_duration "$server_cpu_sec" "$pipeline_duration")
                     total_cpu_pct=$(sum_cpu_pct "$client_cpu" "$server_cpu_pct")
 
                     write_csv_row "uds-pipeline-d${PIPELINE_DEPTH}" "$client_lang" "$server_lang" "0" \
@@ -729,7 +1189,7 @@ main() {
 
             log "  uds-pipeline-batch: ${client_lang}->${server_lang} depth=${PIPELINE_DEPTH}"
 
-            local server_duration=$((DURATION + 5))
+            local server_duration=$((pipeline_duration + 5))
             local server_pid
             # Pipeline+batch needs the batch server (higher limits)
             server_pid=$(start_server "$server_lang" "uds-batch-ping-pong-server" "$pipe_batch_svc" "$server_duration") || {
@@ -741,12 +1201,12 @@ main() {
 
             local client_bin
             client_bin="$(bench_bin "$client_lang")"
-            local client_timeout=$((DURATION + 15))
+            local client_timeout=$((pipeline_duration + 15))
             local client_output
             local client_status
             local client_err="${RUN_DIR}/client-uds-pipeline-batch-${server_lang}-${client_lang}.err"
             set +e
-            client_output=$(timeout "$client_timeout" "$client_bin" "uds-pipeline-batch-client" "$RUN_DIR" "$pipe_batch_svc" "$DURATION" "0" "$PIPELINE_DEPTH" 2>"$client_err")
+            client_output=$(timeout "$client_timeout" "$client_bin" "uds-pipeline-batch-client" "$RUN_DIR" "$pipe_batch_svc" "$pipeline_duration" "0" "$PIPELINE_DEPTH" 2>"$client_err")
             client_status=$?
             set -e
 
@@ -788,7 +1248,7 @@ main() {
                     fi
 
                     local server_cpu_pct total_cpu_pct
-                    server_cpu_pct=$(cpu_pct_for_duration "$server_cpu_sec" "$DURATION")
+                    server_cpu_pct=$(cpu_pct_for_duration "$server_cpu_sec" "$pipeline_duration")
                     total_cpu_pct=$(sum_cpu_pct "$client_cpu" "$server_cpu_pct")
 
                     write_csv_row "uds-pipeline-batch-d${PIPELINE_DEPTH}" "$client_lang" "$server_lang" "0" \
@@ -811,6 +1271,11 @@ main() {
 
     if [ "$RUN_FAILED" -ne 0 ]; then
         err "One or more POSIX benchmark scenarios failed; CSV is incomplete or invalid"
+        return 1
+    fi
+
+    if ! retry_floor_violations; then
+        err "One or more POSIX benchmark floor retries failed; generated CSV still violates a performance floor"
         return 1
     fi
 

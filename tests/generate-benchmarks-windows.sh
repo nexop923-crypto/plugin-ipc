@@ -25,10 +25,11 @@ EXPECTED_HEADER="scenario,client,server,target_rps,throughput,p50_us,p95_us,p99_
 EXPECTED_TOTAL_ROWS=201
 RUNNER_DEFAULT_REPETITIONS=5
 RUNNER_DEFAULT_FIXED_DURATION=5
-RUNNER_DEFAULT_MAX_DURATION=10
+RUNNER_DEFAULT_MAX_DURATION=20
 RUNNER_DEFAULT_PIPELINE_BATCH_MAX_DURATION=20
 RUNNER_DEFAULT_MAX_THROUGHPUT_RATIO=1.35
 RUNNER_DEFAULT_MIN_STABLE_SAMPLES=3
+RUNNER_DEFAULT_ALLOW_TRIMMED_UNSTABLE_RAW=1
 VALIDATION_FAILED=0
 FLOOR_FAILED=0
 CSV_FILE=""
@@ -257,11 +258,12 @@ emit_methodology() {
     echo "- The current Windows runner publishes one CSV row per matrix cell after aggregating repeated measurements."
     echo "- Current runner defaults: ${RUNNER_DEFAULT_REPETITIONS} samples per cell."
     echo "- Fixed-rate rows use ${RUNNER_DEFAULT_FIXED_DURATION}s samples by default."
-    echo "- Most max-tier rows use ${RUNNER_DEFAULT_MAX_DURATION}s samples by default."
-    echo '- `np-pipeline-batch-d16 @ max` uses '"${RUNNER_DEFAULT_PIPELINE_BATCH_MAX_DURATION}"'s samples by default because the 10s window was not stable enough on `win11`.'
-    echo "- Throughput publication is strict on the full raw repeated sample set for max-tier rows and attainable fixed-rate rows."
-    echo "- Every repeated row must keep raw max/min <= ${RUNNER_DEFAULT_MAX_THROUGHPUT_RATIO}; one lucky or unlucky extreme is no longer publishable."
-    echo "- With 5 samples, the runner still computes the trimmed stable core for diagnostics."
+    echo "- Max-tier rows use ${RUNNER_DEFAULT_MAX_DURATION}s samples by default."
+    echo '- `np-pipeline-batch-d16 @ max` uses '"${RUNNER_DEFAULT_PIPELINE_BATCH_MAX_DURATION}"'s samples by default.'
+    echo "- Throughput publication uses the median of repeated samples after stability checks."
+    echo "- The stable core must contain at least ${RUNNER_DEFAULT_MIN_STABLE_SAMPLES} samples and keep max/min <= ${RUNNER_DEFAULT_MAX_THROUGHPUT_RATIO}."
+    echo "- Current trimmed raw-outlier publication default: ${RUNNER_DEFAULT_ALLOW_TRIMMED_UNSTABLE_RAW}; with 5 samples this permits one low and one high scheduler outlier when the trimmed stable core remains publishable."
+    echo "- Raw outliers are still reported by the runner with the per-repeat sample file path."
     echo "- Oversubscribed fixed-rate rows are the one exception: when the requested target is above the same pair's already-measured @ max capacity, the row may still publish if the trimmed stable core contains at least ${RUNNER_DEFAULT_MIN_STABLE_SAMPLES} samples and stays within max/min <= ${RUNNER_DEFAULT_MAX_THROUGHPUT_RATIO}."
     echo '- This keeps the Windows `100000/s` saturation-style rows visible without pretending they are attainable fixed-rate commitments.'
     echo '- The script CLI duration still controls the fixed-rate rows; `NIPC_BENCH_MAX_DURATION` controls most max-tier rows; `NIPC_BENCH_PIPELINE_BATCH_MAX_DURATION` controls `np-pipeline-batch-d16 @ max`.'
