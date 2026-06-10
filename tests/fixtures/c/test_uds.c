@@ -1109,9 +1109,9 @@ static void test_stale_recovery(void)
     cleanup_socket(svc);
 }
 
-static void test_stale_recovery_does_not_unlink_regular_file(void)
+static void test_stale_recovery_reclaims_regular_file(void)
 {
-    printf("Test: Stale socket recovery leaves regular files alone\n");
+    printf("Test: Stale socket recovery reclaims a foreign regular file\n");
     const char *svc = "test_stale_regular";
     cleanup_socket(svc);
 
@@ -1126,16 +1126,19 @@ static void test_stale_recovery_does_not_unlink_regular_file(void)
     }
     check("regular file created at socket path", fd >= 0);
 
+    /* A foreign file squatting on the endpoint path is not a live server —
+     * it is silently reclaimed so the service can start. */
     nipc_uds_server_config_t scfg = default_server_config();
     nipc_uds_listener_t listener;
     nipc_uds_error_t err = nipc_uds_listen(TEST_RUN_DIR, svc, &scfg, &listener);
-    check("listen refuses regular file path", err == NIPC_UDS_ERR_ADDR_IN_USE);
-    if (err == NIPC_UDS_OK)
-        nipc_uds_close_listener(&listener);
+    check("listen reclaims regular file path", err == NIPC_UDS_OK);
 
     struct stat st;
-    check("regular file remains after stale probe",
-          stat(path, &st) == 0 && S_ISREG(st.st_mode));
+    check("socket replaces the foreign file",
+          stat(path, &st) == 0 && S_ISSOCK(st.st_mode));
+
+    if (err == NIPC_UDS_OK)
+        nipc_uds_close_listener(&listener);
 
     cleanup_socket(svc);
 }
@@ -3235,7 +3238,7 @@ int main(void)
     test_profile_mismatch();       printf("\n");
     test_request_payload_over_cap(); printf("\n");
     test_stale_recovery();         printf("\n");
-    test_stale_recovery_does_not_unlink_regular_file(); printf("\n");
+    test_stale_recovery_reclaims_regular_file(); printf("\n");
     test_disconnect_inflight();    printf("\n");
     test_batch();                  printf("\n");
     test_invalid_service_name();   printf("\n");

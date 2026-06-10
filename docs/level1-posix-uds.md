@@ -118,9 +118,14 @@ and therefore a different SHM file path.
 - Server checks if the socket path exists before bind.
 - If it exists: attempt to connect to it. If connection succeeds, a
   live server owns it — fail with address-in-use. If connection fails
-  with ECONNREFUSED or ENOENT, the socket is stale — unlink and
-  recreate. Other connect errors (EACCES, EPERM, etc.) are not treated
-  as stale — the file is left in place and the server fails.
+  with ENOENT, nothing is there. Any other connect failure
+  (ECONNREFUSED, EACCES, a foreign file squatting on the socket path,
+  etc.) means the endpoint is not a live server — it is silently
+  unlinked and recreated.
+- The only exception is fd exhaustion (EMFILE/ENFILE) while creating
+  the probe socket: liveness cannot be evaluated, so the endpoint is
+  kept and the server fails with address-in-use rather than risk
+  deleting a live socket.
 
 ### SHM file
 
@@ -128,9 +133,10 @@ and therefore a different SHM file path.
   generation) stored in the SHM region header.
 - If the owner PID is alive and the generation matches, the region is
   active — fail with address-in-use.
-- If the owner PID is dead or the region is invalid/undersized, the
-  region is stale — unlink and recreate. If the file cannot be opened
-  due to permission errors (EACCES, EPERM), it is left in place.
+- If the owner PID is dead or the region is invalid/undersized/unreadable,
+  the region is stale or junk — silently unlink and recreate. Only fd
+  exhaustion (EMFILE/ENFILE) keeps the file in place, because liveness
+  could not be evaluated.
 - Clients that open an undersized/unpopulated SHM file (server has
   created it but not yet initialized the header) treat it as a
   retryable protocol-not-ready condition.

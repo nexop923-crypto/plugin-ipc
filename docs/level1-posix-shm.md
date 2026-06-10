@@ -246,20 +246,24 @@ When a session closes (graceful or broken):
 Both `server_create` (per-session) and `cleanup_stale` (startup scan)
 use the same stale detection logic:
 
-1. Verify `{run_dir}` is safe for automatic stale unlink: owned by the
-   effective process user and not group- or world-writable. If the directory is
-   unsafe, stale entries are left in place and treated as in-use.
-2. Open the file and mmap the header. If `open()` fails with a
-   permission error (EACCES, EPERM), the file is left in place — it
-   may belong to another user or process.
-3. Validate magic. If invalid or file is undersized: stale — unlink only when
-   `{run_dir}` passed the safety check.
-4. Check `owner_pid` and `owner_generation`:
+1. Open the file and mmap the header. If `open()` fails with ENOENT,
+   nothing is there. If it fails with EMFILE/ENFILE (fd exhaustion),
+   liveness cannot be evaluated — the entry is kept and treated as
+   in-use. Any other open failure (unreadable file, symlink, foreign
+   junk at the endpoint name) marks the entry as junk — silently unlink.
+2. Validate magic. If invalid, or the file is undersized or not a
+   regular file: junk — silently unlink.
+3. Check `owner_pid` and `owner_generation`:
    - If `owner_pid` is alive AND `owner_generation` is non-zero:
-     the region is live — leave it.
+     the region is live — leave it, report address-in-use.
    - Otherwise (PID dead, or generation is zero indicating an
-     uninitialized/legacy region): stale — unlink only when `{run_dir}` passed
-     the safety check.
+     uninitialized/legacy region): stale — silently unlink.
+
+Liveness is the only criterion: a live server's endpoint is never
+deleted, and everything else found at an endpoint name is reclaimed so
+the service can start. Run-directory permissions do not gate stale
+recovery — the run dir is expected to be the embedding service's
+private runtime directory.
 
 The `owner_generation` check catches PID reuse: a new process that
 reuses an old PID will not have the same generation value. A zero

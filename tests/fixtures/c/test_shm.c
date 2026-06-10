@@ -1507,9 +1507,9 @@ static void test_stale_bad_magic_file(void)
     cleanup_shm(svc);
 }
 
-static void test_stale_symlink_file_not_unlinked(void)
+static void test_stale_symlink_reclaimed_without_touching_target(void)
 {
-    printf("Test: Stale SHM recovery leaves symlinks alone\n");
+    printf("Test: Stale SHM recovery reclaims a symlink, target untouched\n");
     const char *svc = "shm_stale_symlink";
     cleanup_shm(svc);
 
@@ -1529,16 +1529,21 @@ static void test_stale_symlink_file_not_unlinked(void)
     check("symlink target created", fd >= 0);
     check("SHM symlink created", symlink(target, path) == 0);
 
+    /* A symlink at the endpoint name is junk: the link itself is removed
+     * (never its target) and the region is created in its place. */
     nipc_shm_ctx_t server;
     nipc_shm_error_t err = nipc_shm_server_create(
         TEST_RUN_DIR, svc, 1, 1024, 1024, &server);
-    check("create refuses symlink path", err == NIPC_SHM_ERR_ADDR_IN_USE);
-    if (err == NIPC_SHM_OK)
-        nipc_shm_destroy(&server);
+    check("create reclaims symlink path", err == NIPC_SHM_OK);
 
     struct stat st;
-    check("symlink remains after stale probe",
-          lstat(path, &st) == 0 && S_ISLNK(st.st_mode));
+    check("region replaces the symlink",
+          lstat(path, &st) == 0 && S_ISREG(st.st_mode));
+    check("symlink target untouched",
+          stat(target, &st) == 0 && st.st_size == 10);
+
+    if (err == NIPC_SHM_OK)
+        nipc_shm_destroy(&server);
 
     unlink(path);
     unlink(target);
@@ -1708,7 +1713,7 @@ int main(void)
     test_shm_receive_msg_too_large();  printf("\n");
     test_stale_undersized_file();      printf("\n");
     test_stale_bad_magic_file();       printf("\n");
-    test_stale_symlink_file_not_unlinked(); printf("\n");
+    test_stale_symlink_reclaimed_without_touching_target(); printf("\n");
     test_shm_bad_header_len_file();    printf("\n");
     test_shm_bad_size_alignment_file(); printf("\n");
     test_shm_declared_area_exceeds_file(); printf("\n");

@@ -12,7 +12,6 @@ use crate::protocol::{
 use std::collections::HashSet;
 use std::ffi::CString;
 use std::io;
-use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -602,7 +601,7 @@ impl UdsListener {
         let path = build_socket_path(run_dir, service_name)?;
 
         // Stale recovery
-        match check_and_recover_stale(&path, run_dir_allows_stale_unlink(run_dir)) {
+        match check_and_recover_stale(&path) {
             StaleResult::LiveServer => return Err(UdsError::AddrInUse),
             StaleResult::Stale | StaleResult::NotExist => { /* proceed */ }
         }
@@ -919,17 +918,7 @@ enum StaleResult {
     LiveServer,
 }
 
-fn run_dir_allows_stale_unlink(run_dir: &str) -> bool {
-    let metadata = match std::fs::metadata(run_dir) {
-        Ok(m) => m,
-        Err(_) => return false,
-    };
-    metadata.is_dir()
-        && metadata.uid() == unsafe { libc::geteuid() }
-        && metadata.mode() & 0o022 == 0
-}
-
-fn check_and_recover_stale(path: &str, allow_stale_unlink: bool) -> StaleResult {
+fn check_and_recover_stale(path: &str) -> StaleResult {
     if !Path::new(path).exists() {
         return StaleResult::NotExist;
     }
@@ -937,7 +926,9 @@ fn check_and_recover_stale(path: &str, allow_stale_unlink: bool) -> StaleResult 
     // Try connecting to see if a live server is there
     let probe = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_SEQPACKET, 0) };
     if probe < 0 {
-        return StaleResult::NotExist;
+        // Cannot probe liveness (fd exhaustion) — keep the endpoint; the
+        // subsequent bind() fails instead of risking a live socket.
+        return StaleResult::LiveServer;
     }
 
     let result = match connect_unix(probe, path) {
@@ -946,22 +937,20 @@ fn check_and_recover_stale(path: &str, allow_stale_unlink: bool) -> StaleResult 
             StaleResult::LiveServer
         }
         Err(UdsError::Connect(e)) if e == libc::ENOENT => StaleResult::NotExist,
-        Err(UdsError::Connect(e)) if e == libc::ECONNREFUSED => {
-            if !allow_stale_unlink {
-                StaleResult::LiveServer
-            } else {
-                // Connection refused means stale; unlink only in a private run dir.
-                match std::fs::remove_file(path) {
-                    Ok(()) => StaleResult::Stale,
-                    Err(err) if err.kind() == io::ErrorKind::NotFound => StaleResult::NotExist,
-                    Err(_) => StaleResult::LiveServer,
-                }
-            }
-        }
         Err(_) => {
-            // Other errors (EACCES, etc.) — can't determine ownership,
-            // treat as live to prevent overwriting
-            StaleResult::LiveServer
+            // Nothing accepted the connection: a dead server's socket, or a
+            // foreign file squatting on the endpoint path. Reclaim it.
+            match std::fs::remove_file(path) {
+                Ok(()) => StaleResult::Stale,
+                Err(err) if err.kind() == io::ErrorKind::NotFound => StaleResult::NotExist,
+                Err(err) if err.raw_os_error() == Some(libc::EISDIR) => {
+                    match std::fs::remove_dir(path) {
+                        Ok(()) => StaleResult::Stale,
+                        Err(_) => StaleResult::LiveServer,
+                    }
+                }
+                Err(_) => StaleResult::LiveServer,
+            }
         }
     };
 

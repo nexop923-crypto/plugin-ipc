@@ -531,12 +531,17 @@ stale if a server process crashes without cleanup. Level 1 handles this:
   it (unlinks and recreates).
 - On listen: if an active endpoint exists from a live process, Level 1 fails
   with an appropriate error (address already in use).
-- On POSIX: automatic stale unlink is allowed only when `run_dir` is owned by
-  the effective process user and is not group- or world-writable. In unsafe
-  shared directories, stale entries are treated as in-use so Level 1 does not
-  unlink paths that another local user could race or replace.
+- Liveness is the only criterion: anything found at an endpoint name that is
+  not a live server (dead server's endpoint, foreign file accidentally placed
+  there, invalid or unreadable entry) is silently reclaimed so the service
+  can start. The one exception is fd exhaustion during the liveness check
+  itself — then the entry is kept and reported as in-use, so a live endpoint
+  is never deleted on an unverifiable check.
 - Stale detection uses process ownership metadata (PID and generation) to
   avoid false reclamation due to PID reuse.
+- `run_dir` is expected to be the embedding service's private runtime
+  directory (e.g. netdata's run dir); its permissions do not gate stale
+  recovery.
 
 ## Testing requirements
 

@@ -14,6 +14,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -73,8 +74,11 @@ static void session_shm_path(char *dst, size_t dst_len,
 static void cleanup_session_shm(const char *service, uint64_t session_id)
 {
     char path[256];
+    char keep[300];
     session_shm_path(path, sizeof(path), service, session_id);
     unlink(path);
+    snprintf(keep, sizeof(keep), "%s/keep", path);
+    unlink(keep);
     rmdir(path);
 }
 
@@ -82,10 +86,16 @@ static void create_session_shm_obstruction_dir(const char *service,
                                                uint64_t session_id)
 {
     char path[256];
+    char keep[300];
     session_shm_path(path, sizeof(path), service, session_id);
-    unlink(path);
-    rmdir(path);
+    cleanup_session_shm(service, session_id);
     mkdir(path, 0700);
+    /* A non-empty directory cannot be reclaimed by stale recovery, so SHM
+     * prepare keeps failing and the session must fall back to baseline. */
+    snprintf(keep, sizeof(keep), "%s/keep", path);
+    int fd = open(keep, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd >= 0)
+        close(fd);
 }
 
 static void cleanup_all(const char *service)

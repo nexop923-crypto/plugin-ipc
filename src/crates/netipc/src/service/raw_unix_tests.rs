@@ -20,11 +20,7 @@ const RESPONSE_BUF_SIZE: usize = 65536;
 static RAW_SERVICE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn ensure_run_dir() {
-    use std::os::unix::fs::PermissionsExt;
     let _ = std::fs::create_dir_all(TEST_RUN_DIR);
-    // The stale-unlink guard refuses group/other-writable run dirs; pin the
-    // mode so the process umask cannot decide test outcomes.
-    let _ = std::fs::set_permissions(TEST_RUN_DIR, std::fs::Permissions::from_mode(0o700));
 }
 
 fn cleanup_all(service: &str) {
@@ -1160,7 +1156,10 @@ fn test_server_falls_back_to_baseline_when_linux_shm_prepare_fails() {
 
     let shm_path = format!("{TEST_RUN_DIR}/{svc}-{:016x}.ipcshm", 1u64);
     let _ = std::fs::remove_dir_all(&shm_path);
+    // A non-empty directory cannot be reclaimed by stale recovery, so SHM
+    // prepare keeps failing and the server must fall back to baseline.
     std::fs::create_dir(&shm_path).expect("create SHM obstruction directory");
+    std::fs::write(format!("{shm_path}/keep"), b"x").expect("populate obstruction");
 
     let mut server = TestServer::start_with(
         svc,
