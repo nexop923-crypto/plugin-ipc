@@ -336,6 +336,13 @@ impl UdsSession {
     /// Inner send logic, separated so the caller can rollback on failure.
     fn send_inner(&mut self, hdr: &mut Header, payload: &[u8]) -> Result<(), UdsError> {
         let total_msg = HEADER_SIZE + payload.len();
+        // total_message_len is a u32 wire field; larger totals are
+        // unrepresentable (parity with the C nipc_uds_header_payload_len).
+        if total_msg > u32::MAX as usize {
+            return Err(UdsError::BadParam(
+                "total message length exceeds protocol limit".into(),
+            ));
+        }
 
         // Single packet?
         if total_msg <= self.packet_size as usize {
@@ -446,6 +453,14 @@ impl UdsSession {
         }
 
         let total_msg = HEADER_SIZE + hdr.payload_len as usize;
+        // total_message_len is a u32 wire field; reject unrepresentable totals
+        // so the chunk-header comparison below cannot truncate-match (parity
+        // with the C nipc_uds_header_payload_len).
+        if total_msg > u32::MAX as usize {
+            return Err(UdsError::Protocol(
+                "total message length exceeds protocol limit".into(),
+            ));
+        }
 
         if n > total_msg {
             return Err(UdsError::Protocol(
