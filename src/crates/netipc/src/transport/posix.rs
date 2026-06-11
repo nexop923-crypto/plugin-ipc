@@ -14,7 +14,8 @@ use std::ffi::CString;
 use std::io;
 use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
 //  Constants
@@ -45,6 +46,10 @@ pub enum UdsError {
     Send(i32),
     /// recv() failed or peer disconnected.
     Recv(i32),
+    /// Receive timed out before a complete message arrived.
+    Timeout,
+    /// Receive was aborted by the caller.
+    Aborted,
     /// Handshake protocol error.
     Handshake(String),
     /// Authentication token rejected.
@@ -80,6 +85,8 @@ impl std::fmt::Display for UdsError {
             UdsError::Accept(e) => write!(f, "accept failed: errno {e}"),
             UdsError::Send(e) => write!(f, "send failed: errno {e}"),
             UdsError::Recv(e) => write!(f, "recv failed: errno {e}"),
+            UdsError::Timeout => write!(f, "receive timed out"),
+            UdsError::Aborted => write!(f, "receive aborted"),
             UdsError::Handshake(s) => write!(f, "handshake error: {s}"),
             UdsError::AuthFailed => write!(f, "authentication token rejected"),
             UdsError::NoProfile => write!(f, "no common transport profile"),
@@ -404,12 +411,28 @@ impl UdsSession {
     /// On success, returns (header, payload_view). The payload view is valid
     /// until the next receive call on this session.
     pub fn receive<'a>(&'a mut self, buf: &'a mut [u8]) -> Result<(Header, &'a [u8]), UdsError> {
+        self.receive_with_control(buf, 0, None)
+    }
+
+    /// Receive one logical message with an optional deadline and abort flag.
+    ///
+    /// `timeout_ms == 0` waits indefinitely. When `abort` is set before a
+    /// complete message arrives, the call returns `UdsError::Aborted`.
+    pub fn receive_with_control<'a>(
+        &'a mut self,
+        buf: &'a mut [u8],
+        timeout_ms: u32,
+        abort: Option<&AtomicBool>,
+    ) -> Result<(Header, &'a [u8]), UdsError> {
         if self.fd < 0 {
             return Err(UdsError::BadParam("session closed".into()));
         }
 
+        let controlled = timeout_ms != 0 || abort.is_some();
+        let mut wait = ReceiveWait::new(timeout_ms, abort);
+
         // Read first packet
-        let n = match raw_recv(self.fd, buf) {
+        let n = match raw_recv_control(self.fd, buf, controlled, &mut wait) {
             Ok(n) => n,
             Err(err) => {
                 self.fail_all_inflight();
@@ -522,7 +545,7 @@ impl UdsSession {
 
         let mut ci = 1u32;
         while assembled < hdr.payload_len as usize {
-            let cn = match raw_recv(self.fd, &mut self.pkt_buf) {
+            let cn = match raw_recv_control(self.fd, &mut self.pkt_buf, controlled, &mut wait) {
                 Ok(n) => n,
                 Err(err) => {
                     self.fail_all_inflight();
@@ -865,6 +888,105 @@ fn raw_recv(fd: RawFd, buf: &mut [u8]) -> Result<usize, UdsError> {
         return Err(UdsError::Recv(if n == 0 { 0 } else { errno() }));
     }
     Ok(n as usize)
+}
+
+struct ReceiveWait<'a> {
+    deadline: Option<Instant>,
+    abort: Option<&'a AtomicBool>,
+}
+
+impl<'a> ReceiveWait<'a> {
+    fn new(timeout_ms: u32, abort: Option<&'a AtomicBool>) -> Self {
+        Self {
+            deadline: (timeout_ms != 0)
+                .then(|| Instant::now() + Duration::from_millis(timeout_ms as u64)),
+            abort,
+        }
+    }
+
+    fn aborted(&self) -> bool {
+        self.abort
+            .map(|flag| flag.load(Ordering::Acquire))
+            .unwrap_or(false)
+    }
+
+    fn poll_timeout_ms(&self) -> Result<i32, UdsError> {
+        if self.aborted() {
+            return Err(UdsError::Aborted);
+        }
+
+        let mut wait_ms: Option<u64> = if let Some(deadline) = self.deadline {
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(UdsError::Timeout);
+            }
+            Some(
+                deadline
+                    .duration_since(now)
+                    .as_millis()
+                    .min(i32::MAX as u128) as u64,
+            )
+        } else {
+            None
+        };
+
+        if self.abort.is_some() {
+            wait_ms = Some(wait_ms.map_or(100, |ms| ms.min(100)));
+        }
+
+        Ok(wait_ms.map_or(-1, |ms| ms as i32))
+    }
+}
+
+fn wait_fd_readable(fd: RawFd, wait: &ReceiveWait<'_>) -> Result<(), UdsError> {
+    loop {
+        let timeout = wait.poll_timeout_ms()?;
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let rc = unsafe { libc::poll(&mut pfd, 1, timeout) };
+        if rc < 0 {
+            let err = errno();
+            if err == libc::EINTR {
+                continue;
+            }
+            return Err(UdsError::Recv(err));
+        }
+        if rc == 0 {
+            if wait.aborted() {
+                return Err(UdsError::Aborted);
+            }
+            return Err(UdsError::Timeout);
+        }
+        if wait.aborted() {
+            return Err(UdsError::Aborted);
+        }
+        return Ok(());
+    }
+}
+
+fn raw_recv_with_wait(
+    fd: RawFd,
+    buf: &mut [u8],
+    wait: &mut ReceiveWait<'_>,
+) -> Result<usize, UdsError> {
+    wait_fd_readable(fd, wait)?;
+    raw_recv(fd, buf)
+}
+
+fn raw_recv_control(
+    fd: RawFd,
+    buf: &mut [u8],
+    controlled: bool,
+    wait: &mut ReceiveWait<'_>,
+) -> Result<usize, UdsError> {
+    if controlled {
+        raw_recv_with_wait(fd, buf, wait)
+    } else {
+        raw_recv(fd, buf)
+    }
 }
 
 // ---------------------------------------------------------------------------

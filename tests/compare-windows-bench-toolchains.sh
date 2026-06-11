@@ -15,9 +15,10 @@ OUT_DIR="${1:-${TEMP:-/tmp}/netipc-windows-toolchain-compare}"
 DURATION="${2:-3}"
 REPETITIONS="${NIPC_BENCH_COMPARE_REPETITIONS:-5}"
 ROW_SETTLE_SEC="${NIPC_BENCH_COMPARE_ROW_SETTLE_SEC:-1}"
-MAX_DURATION="${NIPC_BENCH_COMPARE_MAX_DURATION:-${DURATION}}"
-PIPELINE_BATCH_MAX_DURATION="${NIPC_BENCH_COMPARE_PIPELINE_BATCH_MAX_DURATION:-${DURATION}}"
+MAX_DURATION="${NIPC_BENCH_COMPARE_MAX_DURATION:-}"
+PIPELINE_BATCH_MAX_DURATION="${NIPC_BENCH_COMPARE_PIPELINE_BATCH_MAX_DURATION:-}"
 MAX_THROUGHPUT_RATIO="${NIPC_BENCH_COMPARE_MAX_THROUGHPUT_RATIO:-2.00}"
+MIN_STABLE_SAMPLES="${NIPC_BENCH_COMPARE_MIN_STABLE_SAMPLES:-${NIPC_BENCH_MIN_STABLE_SAMPLES:-3}}"
 ENFORCE_POLICY="${NIPC_BENCH_COMPARE_ENFORCE_POLICY:-1}"
 POLICY_ATTEMPTS="${NIPC_BENCH_COMPARE_POLICY_ATTEMPTS:-3}"
 SUMMARY_CSV="${OUT_DIR}/summary.csv"
@@ -150,6 +151,29 @@ require_positive_integer() {
   fi
 }
 
+require_integer_at_least() {
+  local name="$1"
+  local value="$2"
+  local minimum="$3"
+
+  require_positive_integer "$name" "$value"
+  if [ "$value" -lt "$minimum" ]; then
+    err "${name} must be >= ${minimum}, got: ${value}"
+    err "Reason: comparison runs publish trimmed rows; with ${MIN_STABLE_SAMPLES} minimum stable samples this needs at least ${minimum} total samples"
+    exit 1
+  fi
+}
+
+default_max_duration() {
+  local fixed_duration="$1"
+
+  if [ "$fixed_duration" -lt 5 ]; then
+    printf '5\n'
+  else
+    printf '%s\n' "$fixed_duration"
+  fi
+}
+
 min_msys_pct_for_label() {
   local label="$1"
 
@@ -213,6 +237,7 @@ run_toolchain_case() {
     NIPC_BENCH_MAX_DURATION="$MAX_DURATION" \
     NIPC_BENCH_PIPELINE_BATCH_MAX_DURATION="$PIPELINE_BATCH_MAX_DURATION" \
     NIPC_BENCH_MAX_THROUGHPUT_RATIO="$MAX_THROUGHPUT_RATIO" \
+    NIPC_BENCH_MIN_STABLE_SAMPLES="$MIN_STABLE_SAMPLES" \
     NIPC_BENCH_ALLOW_TRIMMED_UNSTABLE_RAW=1 \
     NIPC_BENCH_TARGETED_ATTEMPTS="${NIPC_BENCH_COMPARE_TARGETED_ATTEMPTS:-3}" \
     bash "$TARGETED_RUNNER" --out-dir "$toolchain_out" --duration "$DURATION" --row "$row_arg"
@@ -399,7 +424,19 @@ emit_outputs() {
 
 main() {
   mkdir -p "$OUT_DIR"
+  require_positive_integer "DURATION" "$DURATION"
+  require_positive_integer "NIPC_BENCH_COMPARE_MIN_STABLE_SAMPLES" "$MIN_STABLE_SAMPLES"
+  require_integer_at_least "NIPC_BENCH_COMPARE_REPETITIONS" "$REPETITIONS" "$((MIN_STABLE_SAMPLES + 2))"
   require_positive_integer "NIPC_BENCH_COMPARE_POLICY_ATTEMPTS" "$POLICY_ATTEMPTS"
+
+  if [ -z "$MAX_DURATION" ]; then
+    MAX_DURATION="$(default_max_duration "$DURATION")"
+  fi
+  if [ -z "$PIPELINE_BATCH_MAX_DURATION" ]; then
+    PIPELINE_BATCH_MAX_DURATION="$(default_max_duration "$DURATION")"
+  fi
+  require_positive_integer "NIPC_BENCH_COMPARE_MAX_DURATION" "$MAX_DURATION"
+  require_positive_integer "NIPC_BENCH_COMPARE_PIPELINE_BATCH_MAX_DURATION" "$PIPELINE_BATCH_MAX_DURATION"
 
   run_paired_cases
 

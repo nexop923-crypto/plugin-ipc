@@ -184,6 +184,9 @@ There are two important cases:
 
 - For ordinary transport / peer failures, Level 2 reconnects and retries
   once.
+- Timeout and caller-requested abort are terminal for the current call:
+  Level 2 reports the explicit error, disconnects or marks the current
+  session broken, and does not reconnect/retry that same request.
 - For overflow-driven resize recovery, Level 2 may reconnect more than
   once while negotiated request/response capacities grow. This is a
   fallback safety net, not the primary sizing strategy for typed APIs.
@@ -196,6 +199,19 @@ If the session was NOT previously READY, the call fails immediately
 without attempting reconnection.
 
 If recovery fails, Level 2 reports failure to the caller.
+
+Every synchronous Level 2 client call is bounded. A per-call timeout of
+zero means "use the client context default"; the default is 30000 ms.
+The deadline applies to the complete logical response, including baseline
+transport chunk continuations and SHM response waits. A timeout returns a
+distinct timeout error rather than being collapsed into disconnect or
+protocol failure.
+
+Every Level 2 client context also exposes an abort signal that is safe to
+trigger from another thread while one thread is blocked in a typed call.
+Abort is sticky until the caller explicitly clears it or closes the
+client. A call that observes the abort signal returns a distinct aborted
+error and is not retried.
 
 Negotiated request payload ceilings are capped at 1 MiB. If a peer
 proposes a larger request ceiling, handshake rejects with

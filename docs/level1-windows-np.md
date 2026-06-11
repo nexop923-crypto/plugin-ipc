@@ -89,6 +89,27 @@ sequentially.
 
 See the wire envelope spec for chunk header layout and validation.
 
+## Receive timeout and abort
+
+The baseline receive primitive remains a blocking Level 1 operation for
+callers that want raw transport semantics. Level 1 also provides a
+timeout-aware receive form used by Level 2 typed calls.
+
+The timeout-aware receive form must:
+
+- wait for each required pipe message with a deadline derived from the
+  caller-provided timeout
+- apply the same deadline to the first packet and all continuation
+  packets that make up one logical message
+- observe an explicit abort event while waiting for pipe readability
+- return a distinct timeout error when the deadline expires
+- return a distinct aborted error when the abort event is signaled
+
+Level 2 is responsible for deciding whether a timeout or abort should
+break the session. Level 1 reports timeout and abort distinctly; peer
+disconnect is reported when the pipe read path observes the corresponding
+Win32 pipe error.
+
 ## SHM mapping name derivation
 
 When the handshake negotiates a SHM profile, the shared memory region

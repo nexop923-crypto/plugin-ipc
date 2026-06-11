@@ -142,6 +142,17 @@ reconnect attempt. On overflow-driven resize recovery it may reconnect
 more than once while negotiated capacities grow (up to 8 overflow
 retries). If recovery still fails, the previous cache is preserved.
 
+Refresh is bounded by the underlying Level 2 client call timeout. The
+default timeout is 30000 ms unless the caller sets a different client
+context default or uses an explicit timeout-capable refresh/call form.
+Timeout and caller-requested abort preserve the previous cache, return a
+distinct error, and do not retry the same snapshot request.
+
+Level 3 exposes the underlying Level 2 abort lifecycle for shutdown paths:
+an abort signal may be triggered from another thread to unblock a refresh
+that is waiting in transport receive, and remains active until explicitly
+cleared or the helper is closed.
+
 This is intentional:
 
 - providers may start late

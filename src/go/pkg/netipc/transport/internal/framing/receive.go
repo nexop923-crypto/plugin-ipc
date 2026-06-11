@@ -256,7 +256,7 @@ func (r Receiver) receiveOneChunk(
 	cn, err := r.Recv(pktBuf)
 	if err != nil {
 		r.noteRecvError(err)
-		return r.ErrRecv("continuation recv: " + err.Error())
+		return err
 	}
 	if cn < protocol.HeaderSize {
 		return r.ErrChunk("continuation too short")

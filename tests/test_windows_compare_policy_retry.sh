@@ -75,10 +75,23 @@ STUB
 
 chmod +x "$STUB_RUNNER"
 
+invalid_log="${TMP_DIR}/invalid-repetitions.log"
+if env \
+    NIPC_COMPARE_TEST_STATE="$STATE_DIR" \
+    NIPC_BENCH_COMPARE_TARGETED_RUNNER="$STUB_RUNNER" \
+    NIPC_BENCH_COMPARE_REPETITIONS=3 \
+    bash "${ROOT_DIR}/tests/compare-windows-bench-toolchains.sh" "${TMP_DIR}/invalid" 1 \
+    >"$invalid_log" 2>&1; then
+    fail "compare script accepted too few repetitions"
+fi
+
+grep -q 'NIPC_BENCH_COMPARE_REPETITIONS must be >= 5' "$invalid_log" ||
+    fail "invalid repetition count did not report the required minimum"
+
 env \
     NIPC_COMPARE_TEST_STATE="$STATE_DIR" \
     NIPC_BENCH_COMPARE_TARGETED_RUNNER="$STUB_RUNNER" \
-    NIPC_BENCH_COMPARE_REPETITIONS=1 \
+    NIPC_BENCH_COMPARE_REPETITIONS=5 \
     NIPC_BENCH_COMPARE_POLICY_ATTEMPTS=2 \
     bash "${ROOT_DIR}/tests/compare-windows-bench-toolchains.sh" "$OUT_DIR" 1 >/dev/null
 

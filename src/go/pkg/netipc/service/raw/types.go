@@ -11,6 +11,11 @@ package raw
 // Poll/receive timeout for server loops (ms). Controls shutdown detection latency.
 const serverPollTimeoutMs = 100
 
+// ClientCallTimeoutDefaultMs is the default synchronous client call timeout.
+const ClientCallTimeoutDefaultMs uint32 = 30000
+
+const clientAbortPollMs uint32 = 100
+
 // ---------------------------------------------------------------------------
 //  Client state (shared across platforms)
 // ---------------------------------------------------------------------------

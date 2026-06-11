@@ -5,6 +5,7 @@ package windows
 import (
 	"errors"
 	"syscall"
+	"time"
 
 	"github.com/netdata/plugin-ipc/go/pkg/netipc/protocol"
 	"github.com/netdata/plugin-ipc/go/pkg/netipc/transport/internal/framing"
@@ -12,8 +13,18 @@ import (
 
 // Receive reads one logical message. buf is a scratch buffer.
 func (s *Session) Receive(buf []byte) (protocol.Header, []byte, error) {
+	return s.ReceiveTimeout(buf, 0, nil)
+}
+
+func (s *Session) ReceiveTimeout(buf []byte, timeoutMs uint32, abortCh <-chan struct{}) (protocol.Header, []byte, error) {
 	if s.handle == syscall.InvalidHandle {
 		return protocol.Header{}, nil, wrapErr(ErrBadParam, "session closed")
+	}
+
+	recv := func(dst []byte) (int, error) { return rawRecv(s.handle, dst) }
+	if timeoutMs != 0 || abortCh != nil {
+		wait := newReceiveWait(timeoutMs, abortCh)
+		recv = func(dst []byte) (int, error) { return s.rawRecvWithTimeout(dst, wait) }
 	}
 
 	return framing.SessionReceive(framing.SessionReceiveConfig{
@@ -26,7 +37,7 @@ func (s *Session) Receive(buf []byte) (protocol.Header, []byte, error) {
 		InflightIDs:             s.inflightIDs,
 		RecvBuf:                 &s.recvBuf,
 		PacketBuf:               &s.pktBuf,
-		Recv:                    func(dst []byte) (int, error) { return rawRecv(s.handle, dst) },
+		Recv:                    recv,
 		EnsurePacketScratch:     ensurePipeScratchBuf,
 		IsRecvDisconnect:        func(err error) bool { return errors.Is(err, ErrDisconnected) },
 		FailAllInflight:         s.failAllInflight,
@@ -36,4 +47,66 @@ func (s *Session) Receive(buf []byte) (protocol.Header, []byte, error) {
 		ErrUnknownMsgID:         func(msg string) error { return wrapErr(ErrUnknownMsgID, msg) },
 		ErrRecv:                 func(msg string) error { return wrapErr(ErrRecv, msg) },
 	}, buf)
+}
+
+type receiveWait struct {
+	infinite bool
+	deadline time.Time
+	abortCh  <-chan struct{}
+}
+
+func newReceiveWait(timeoutMs uint32, abortCh <-chan struct{}) receiveWait {
+	w := receiveWait{
+		infinite: timeoutMs == 0,
+		abortCh:  abortCh,
+	}
+	if !w.infinite {
+		w.deadline = time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+	}
+	return w
+}
+
+func (w receiveWait) waitMs() (uint32, error) {
+	if w.abortCh != nil {
+		select {
+		case <-w.abortCh:
+			return 0, ErrAborted
+		default:
+		}
+	}
+
+	waitMs := uint32(100)
+	if w.infinite {
+		return waitMs, nil
+	}
+
+	remaining := time.Until(w.deadline)
+	if remaining <= 0 {
+		return 0, ErrTimeout
+	}
+	if remaining < time.Duration(waitMs)*time.Millisecond {
+		waitMs = uint32((remaining + time.Millisecond - 1) / time.Millisecond)
+		if waitMs == 0 {
+			waitMs = 1
+		}
+	}
+	return waitMs, nil
+}
+
+func (s *Session) rawRecvWithTimeout(buf []byte, wait receiveWait) (int, error) {
+	for {
+		waitMs, err := wait.waitMs()
+		if err != nil {
+			return 0, err
+		}
+
+		ready, err := s.WaitReadable(waitMs)
+		if err != nil {
+			return 0, err
+		}
+		if !ready {
+			continue
+		}
+		return rawRecv(s.handle, buf)
+	}
 }

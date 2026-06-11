@@ -143,6 +143,27 @@ static bool on_snapshot_empty(void *user,
     return true;
 }
 
+static bool on_snapshot_slow(void *user,
+                             const nipc_cgroups_req_t *request,
+                             nipc_cgroups_builder_t *builder)
+{
+    Sleep(150);
+    return on_snapshot(user, request, builder);
+}
+
+static volatile LONG g_blocking_handler_entered;
+static volatile LONG g_blocking_handler_release;
+
+static bool on_snapshot_blocking(void *user,
+                                 const nipc_cgroups_req_t *request,
+                                 nipc_cgroups_builder_t *builder)
+{
+    InterlockedExchange(&g_blocking_handler_entered, 1);
+    while (InterlockedCompareExchange(&g_blocking_handler_release, 0, 0) == 0)
+        Sleep(1);
+    return on_snapshot(user, request, builder);
+}
+
 static nipc_cgroups_service_handler_t full_service_handler = {
     .handle = on_snapshot,
     .snapshot_max_items = 3,
@@ -160,6 +181,33 @@ static nipc_cgroups_service_handler_t empty_snapshot_service_handler = {
     .snapshot_max_items = 1,
     .user = NULL,
 };
+
+static nipc_cgroups_service_handler_t slow_snapshot_service_handler = {
+    .handle = on_snapshot_slow,
+    .snapshot_max_items = 3,
+    .user = NULL,
+};
+
+static nipc_cgroups_service_handler_t blocking_snapshot_service_handler = {
+    .handle = on_snapshot_blocking,
+    .snapshot_max_items = 3,
+    .user = NULL,
+};
+
+typedef struct {
+    nipc_client_ctx_t *client;
+    nipc_cgroups_resp_view_t view;
+    nipc_error_t err;
+} snapshot_call_thread_ctx_t;
+
+static DWORD WINAPI snapshot_call_thread_fn(LPVOID arg)
+{
+    snapshot_call_thread_ctx_t *ctx = (snapshot_call_thread_ctx_t *)arg;
+    ctx->err = nipc_client_call_cgroups_snapshot_timeout(ctx->client,
+                                                         &ctx->view,
+                                                         5000);
+    return 0;
+}
 
 typedef struct {
     char service[64];
@@ -492,6 +540,92 @@ static void test_snapshot_calls(void)
         check("error_count == 0", status.error_count == 0);
     }
 
+    nipc_client_close(&client);
+    stop_server(&sctx, server_thread);
+}
+
+static void test_client_call_timeout_on_wedged_peer(void)
+{
+    printf("--- Client call timeout on wedged peer ---\n");
+
+    char service[64];
+    unique_service(service, sizeof(service), "svc_timeout");
+
+    server_thread_ctx_t sctx;
+    HANDLE server_thread = start_default_server_named(&sctx, service, 4,
+                                                      &slow_snapshot_service_handler);
+    if (!server_thread)
+        return;
+
+    nipc_client_ctx_t client;
+    nipc_client_config_t ccfg = default_client_config();
+    nipc_client_init(&client, TEST_RUN_DIR, service, &ccfg);
+    check("timeout client ready", refresh_until_ready(&client, 100, 10));
+
+    if (nipc_client_ready(&client)) {
+        nipc_cgroups_resp_view_t view;
+        ULONGLONG start = GetTickCount64();
+        nipc_error_t err = nipc_client_call_cgroups_snapshot_timeout(&client,
+                                                                     &view,
+                                                                     30);
+        ULONGLONG elapsed = GetTickCount64() - start;
+        check("wedged peer returns timeout", err == NIPC_ERR_TIMEOUT);
+        check("timeout returns promptly", elapsed < 1000);
+    }
+
+    nipc_client_close(&client);
+    stop_server(&sctx, server_thread);
+}
+
+static void test_client_abort_unblocks_call(void)
+{
+    printf("--- Client abort unblocks in-flight call ---\n");
+
+    char service[64];
+    unique_service(service, sizeof(service), "svc_abort");
+
+    InterlockedExchange(&g_blocking_handler_entered, 0);
+    InterlockedExchange(&g_blocking_handler_release, 0);
+
+    server_thread_ctx_t sctx;
+    HANDLE server_thread = start_default_server_named(
+        &sctx, service, 4, &blocking_snapshot_service_handler);
+    if (!server_thread)
+        return;
+
+    nipc_client_ctx_t client;
+    nipc_client_config_t ccfg = default_client_config();
+    nipc_client_init(&client, TEST_RUN_DIR, service, &ccfg);
+    check("abort client ready", refresh_until_ready(&client, 100, 10));
+
+    snapshot_call_thread_ctx_t call_ctx;
+    memset(&call_ctx, 0, sizeof(call_ctx));
+    call_ctx.client = &client;
+
+    HANDLE call_thread = CreateThread(NULL, 0, snapshot_call_thread_fn,
+                                      &call_ctx, 0, NULL);
+    check("snapshot call thread created", call_thread != NULL);
+    if (call_thread) {
+        for (int i = 0; i < 2000
+             && InterlockedCompareExchange(&g_blocking_handler_entered,
+                                           0, 0) == 0; i++)
+            Sleep(1);
+        check("blocking handler received request",
+              InterlockedCompareExchange(&g_blocking_handler_entered,
+                                         0, 0) == 1);
+
+        ULONGLONG start = GetTickCount64();
+        nipc_client_abort(&client);
+        check("snapshot call thread exited",
+              WaitForSingleObject(call_thread, 1000) == WAIT_OBJECT_0);
+        ULONGLONG elapsed = GetTickCount64() - start;
+        check("aborted call returns aborted",
+              call_ctx.err == NIPC_ERR_ABORTED);
+        check("abort returns promptly", elapsed < 1000);
+        CloseHandle(call_thread);
+    }
+
+    InterlockedExchange(&g_blocking_handler_release, 1);
     nipc_client_close(&client);
     stop_server(&sctx, server_thread);
 }
@@ -885,6 +1019,8 @@ int main(void)
     test_client_lifecycle();
     test_client_lifecycle_ready();
     test_snapshot_calls();
+    test_client_call_timeout_on_wedged_peer();
+    test_client_abort_unblocks_call();
     /* Broken-session retry and cache subcases need a smaller Windows-only
      * harness. In this monolithic executable they deadlock intermittently
      * and poison the full ctest pass. */

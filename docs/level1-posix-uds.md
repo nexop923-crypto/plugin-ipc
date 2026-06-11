@@ -89,6 +89,26 @@ chunk header is used.
 
 See the wire envelope spec for chunk header layout and validation rules.
 
+## Receive timeout and abort
+
+The baseline receive primitive remains a blocking Level 1 operation for
+callers that want raw transport semantics. Level 1 also provides a
+timeout-aware receive form used by Level 2 typed calls.
+
+The timeout-aware receive form must:
+
+- wait for each required SEQPACKET chunk with a deadline derived from the
+  caller-provided timeout
+- apply the same deadline to the first packet and all continuation
+  packets that make up one logical message
+- poll an explicit abort file descriptor at the same time as the socket
+  file descriptor
+- return a distinct timeout error when the deadline expires
+- return a distinct aborted error when the abort descriptor is signaled
+
+Level 2 is responsible for deciding whether a timeout or abort should
+break the session. Level 1 only reports the condition precisely.
+
 ## SHM file path derivation
 
 When the handshake negotiates a SHM profile, the server creates a

@@ -15,6 +15,7 @@
 #include <signal.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +23,7 @@
 #include <sys/un.h>
 #include <sys/syscall.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 #include <linux/futex.h>
 
@@ -50,6 +52,41 @@ static void check(const char *name, int cond)
 static void ensure_run_dir(void)
 {
     mkdir(TEST_RUN_DIR, 0700);
+}
+
+static uint64_t monotonic_msec(void)
+{
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        return 0;
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
+static nipc_uds_error_t accept_with_timeout(nipc_uds_listener_t *listener,
+                                            uint64_t session_id,
+                                            uint32_t timeout_ms,
+                                            nipc_uds_session_t *out)
+{
+    struct pollfd pfd = {
+        .fd = listener ? listener->fd : -1,
+        .events = POLLIN,
+    };
+
+    if (pfd.fd < 0)
+        return NIPC_UDS_ERR_BAD_PARAM;
+
+    for (;;) {
+        int rc = poll(&pfd, 1, (int)timeout_ms);
+        if (rc > 0)
+            break;
+        if (rc == 0)
+            return NIPC_UDS_ERR_TIMEOUT;
+        if (errno == EINTR)
+            continue;
+        return NIPC_UDS_ERR_ACCEPT;
+    }
+
+    return nipc_uds_accept(listener, session_id, out);
 }
 
 static void cleanup_socket(const char *service)
@@ -250,6 +287,55 @@ static nipc_error_t failing_handler(void *user,
     (void)response_buf_size;
     (void)response_len_out;
     return NIPC_ERR_HANDLER_FAILED;
+}
+
+static nipc_error_t slow_cgroups_handler(void *user,
+                                         const nipc_header_t *request_hdr,
+                                         const uint8_t *request_payload,
+                                         size_t request_len,
+                                         uint8_t *response_buf,
+                                         size_t response_buf_size,
+                                         size_t *response_len_out)
+{
+    usleep(150000);
+    return test_cgroups_handler(user, request_hdr, request_payload, request_len,
+                                response_buf, response_buf_size,
+                                response_len_out);
+}
+
+static int g_blocking_handler_entered;
+static int g_blocking_handler_release;
+
+static nipc_error_t blocking_cgroups_handler(void *user,
+                                             const nipc_header_t *request_hdr,
+                                             const uint8_t *request_payload,
+                                             size_t request_len,
+                                             uint8_t *response_buf,
+                                             size_t response_buf_size,
+                                             size_t *response_len_out)
+{
+    __atomic_store_n(&g_blocking_handler_entered, 1, __ATOMIC_RELEASE);
+    while (!__atomic_load_n(&g_blocking_handler_release, __ATOMIC_ACQUIRE))
+        usleep(1000);
+
+    return test_cgroups_handler(user, request_hdr, request_payload, request_len,
+                                response_buf, response_buf_size,
+                                response_len_out);
+}
+
+typedef struct {
+    nipc_client_ctx_t *client;
+    nipc_cgroups_resp_view_t view;
+    nipc_error_t err;
+} snapshot_call_thread_ctx_t;
+
+static void *snapshot_call_thread_fn(void *arg)
+{
+    snapshot_call_thread_ctx_t *ctx = (snapshot_call_thread_ctx_t *)arg;
+    ctx->err = nipc_client_call_cgroups_snapshot_timeout(ctx->client,
+                                                         &ctx->view,
+                                                         5000);
+    return NULL;
 }
 
 /* ------------------------------------------------------------------ */
@@ -674,6 +760,95 @@ static void test_cgroups_call(void)
     check("call_count == 1", status.call_count == 1);
     check("error_count == 0", status.error_count == 0);
 
+    nipc_client_close(&client);
+    stop_server(&sctx, tid);
+    cleanup_all(svc);
+}
+
+static void test_client_call_timeout_on_wedged_peer(void)
+{
+    printf("Test: Client call timeout on wedged peer\n");
+    const char *svc = "svc_call_timeout";
+    cleanup_all(svc);
+
+    server_thread_ctx_t sctx;
+    pthread_t tid;
+    start_server(&sctx, svc, slow_cgroups_handler, &tid);
+    check("timeout test server started",
+          __atomic_load_n(&sctx.ready, __ATOMIC_ACQUIRE) == 1);
+
+    nipc_client_ctx_t client;
+    nipc_client_config_t ccfg = default_client_config();
+    nipc_client_init(&client, TEST_RUN_DIR, svc, &ccfg);
+    for (int i = 0; i < 2000 && !nipc_client_ready(&client); i++) {
+        nipc_client_refresh(&client);
+        usleep(500);
+    }
+    check("timeout test client is READY", nipc_client_ready(&client));
+
+    nipc_cgroups_resp_view_t view;
+    uint64_t start = monotonic_msec();
+    nipc_error_t err = nipc_client_call_cgroups_snapshot_timeout(&client,
+                                                                 &view,
+                                                                 30);
+    uint64_t elapsed = monotonic_msec() - start;
+    check("wedged peer returns timeout", err == NIPC_ERR_TIMEOUT);
+    check("timeout returns promptly", elapsed < 1000u);
+
+    nipc_client_close(&client);
+    stop_server(&sctx, tid);
+    cleanup_all(svc);
+}
+
+static void test_client_abort_unblocks_call(void)
+{
+    printf("Test: Client abort unblocks in-flight call\n");
+    const char *svc = "svc_call_abort";
+    cleanup_all(svc);
+
+    __atomic_store_n(&g_blocking_handler_entered, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_blocking_handler_release, 0, __ATOMIC_RELEASE);
+
+    server_thread_ctx_t sctx;
+    pthread_t tid;
+    start_server(&sctx, svc, blocking_cgroups_handler, &tid);
+    check("abort test server started",
+          __atomic_load_n(&sctx.ready, __ATOMIC_ACQUIRE) == 1);
+
+    nipc_client_ctx_t client;
+    nipc_client_config_t ccfg = default_client_config();
+    nipc_client_init(&client, TEST_RUN_DIR, svc, &ccfg);
+    for (int i = 0; i < 2000 && !nipc_client_ready(&client); i++) {
+        nipc_client_refresh(&client);
+        usleep(500);
+    }
+    check("abort test client is READY", nipc_client_ready(&client));
+
+    snapshot_call_thread_ctx_t call_ctx;
+    memset(&call_ctx, 0, sizeof(call_ctx));
+    call_ctx.client = &client;
+
+    pthread_t call_tid;
+    check("snapshot call thread created",
+          pthread_create(&call_tid, NULL, snapshot_call_thread_fn,
+                         &call_ctx) == 0);
+
+    for (int i = 0; i < 2000
+         && !__atomic_load_n(&g_blocking_handler_entered, __ATOMIC_ACQUIRE);
+         i++)
+        usleep(500);
+    check("blocking handler received request",
+          __atomic_load_n(&g_blocking_handler_entered,
+                          __ATOMIC_ACQUIRE) == 1);
+
+    uint64_t start = monotonic_msec();
+    nipc_client_abort(&client);
+    check("snapshot call thread exited", pthread_join(call_tid, NULL) == 0);
+    uint64_t elapsed = monotonic_msec() - start;
+    check("aborted call returns aborted", call_ctx.err == NIPC_ERR_ABORTED);
+    check("abort returns promptly", elapsed < 1000u);
+
+    __atomic_store_n(&g_blocking_handler_release, 1, __ATOMIC_RELEASE);
     nipc_client_close(&client);
     stop_server(&sctx, tid);
     cleanup_all(svc);
@@ -1961,7 +2136,7 @@ static void *fake_shm_attach_fallback_server_thread_fn(void *arg)
 
     __atomic_store_n(&ctx->ready, 1, __ATOMIC_RELEASE);
 
-    if (nipc_uds_accept(&listener, 1, &first) != NIPC_UDS_OK)
+    if (accept_with_timeout(&listener, 1, 30000, &first) != NIPC_UDS_OK)
         goto out;
     ctx->first_selected_profile = first.selected_profile;
 
@@ -1976,7 +2151,7 @@ static void *fake_shm_attach_fallback_server_thread_fn(void *arg)
     nipc_uds_close_session(&first);
     first.fd = -1;
 
-    if (nipc_uds_accept(&listener, 2, &second) != NIPC_UDS_OK)
+    if (accept_with_timeout(&listener, 2, 30000, &second) != NIPC_UDS_OK)
         goto out;
     ctx->second_selected_profile = second.selected_profile;
 
@@ -3241,6 +3416,8 @@ int main(void)
 
     test_client_lifecycle();       printf("\n");
     test_cgroups_call();           printf("\n");
+    test_client_call_timeout_on_wedged_peer(); printf("\n");
+    test_client_abort_unblocks_call(); printf("\n");
     test_cgroups_lookup_call();    printf("\n");
     test_apps_lookup_call();       printf("\n");
     test_cgroups_lookup_call_shm(); printf("\n");

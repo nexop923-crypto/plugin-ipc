@@ -324,6 +324,9 @@ as explicit assumptions, not as implementation details they can reinterpret.
 - L2 clients and L3 caches should be treated as single-owner mutable objects
   unless the integrator adds external synchronization.
   - They are not documented as internally synchronized shared objects.
+  - The only cross-thread operation provided by the public client contract is
+    the abort signal, which may be triggered by a shutdown thread to release a
+    call blocked in transport receive.
   - On the same object instance, do not concurrently call:
     - `refresh()`
     - blocking typed methods
@@ -542,16 +545,30 @@ L2 typed calls are at-least-once:
   - reconnect
   - retry
 - ordinary failures retry once
+- timeout and caller-requested abort are terminal for that call and are not
+  retried
 - overflow-driven resize recovery may reconnect multiple times while capacities
   grow
 - managed servers close a session after terminal service errors such as
   `LIMIT_EXCEEDED`, `BAD_ENVELOPE`, or `INTERNAL_ERROR`; recovery is a new
   handshake on a new session
 
+L2 typed calls are also bounded:
+
+- a per-call timeout of zero uses the client context default
+- the default client context timeout is 30000 ms
+- the deadline covers the complete logical response, including chunked
+  baseline messages and SHM waits
+- timeout and abort have distinct errors, so shutdown handling does not need
+  to guess whether the peer disconnected
+- abort is sticky until the caller clears it or closes the client/cache helper
+
 Implication:
 
 - server handlers must be duplicate-safe
 - do not design exactly-once business semantics around L2 calls
+- shutdown paths can abort a blocked call, but normal shared-client access
+  still needs external synchronization in C and Go
 
 ### SHM attach failure
 

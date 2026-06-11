@@ -153,6 +153,12 @@ if client.Ready() {
 }
 ```
 
+Typed client calls are bounded by a client call timeout. Passing an
+explicit timeout of zero uses the client context default, which is
+30000 ms. Clients also expose an abort signal so shutdown code can
+release a call blocked in receive; the abort remains active until it is
+cleared or the client is closed.
+
 ## Managed Server (L2)
 
 The managed server receives wire messages, but that is internal to the

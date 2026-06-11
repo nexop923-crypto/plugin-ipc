@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: in-progress
+Status: paused
 
-Sub-state: Codacy test/bench exclusion and refreshed production-source maintainability baseline in progress.
+Sub-state: paused by user decision on 2026-06-11 so `SOW-0016` can take current active slot for a timeout/abort liveness fix. Resume from Codacy test/bench exclusion and refreshed production-source maintainability baseline work.
 
 ## Requirements
 
