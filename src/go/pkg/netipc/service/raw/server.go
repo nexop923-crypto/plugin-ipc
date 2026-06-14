@@ -29,6 +29,8 @@ func (s *Server) initCommon(
 	if workerCount < 1 {
 		workerCount = 1
 	}
+	requestPayloadGrowthCeiling := payloadGrowthCeiling(maxRequestPayloadBytes)
+	responsePayloadGrowthCeiling := payloadGrowthCeiling(maxResponsePayloadBytes)
 	if maxRequestPayloadBytes == 0 {
 		maxRequestPayloadBytes = protocol.MaxPayloadDefault
 	}
@@ -41,8 +43,8 @@ func (s *Server) initCommon(
 	s.expectedMethodCode = expectedMethodCode
 	s.handler = handler
 	s.workerCount = workerCount
-	s.requestPayloadGrowthCeiling = payloadGrowthCeiling(maxRequestPayloadBytes)
-	s.responsePayloadGrowthCeiling = payloadGrowthCeiling(maxResponsePayloadBytes)
+	s.requestPayloadGrowthCeiling = requestPayloadGrowthCeiling
+	s.responsePayloadGrowthCeiling = responsePayloadGrowthCeiling
 	s.learnedRequestPayloadBytes.Store(maxRequestPayloadBytes)
 	s.learnedResponsePayloadBytes.Store(maxResponsePayloadBytes)
 }

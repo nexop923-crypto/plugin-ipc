@@ -204,34 +204,17 @@ func AppsLookupDispatch(handle AppsLookupHandler) DispatchHandler {
 		return nil
 	}
 	return func(request []byte, responseBuf []byte) (int, error) {
-		req, err := protocol.DecodeAppsLookupRequest(request)
-		if err != nil {
-			return 0, err
-		}
-		minRequired, err := lookupMinRequired(protocol.AppsLookupRespHdr, req.ItemCount)
-		if err != nil {
-			return 0, err
-		}
-		if len(responseBuf) < minRequired {
-			return 0, protocol.ErrOverflow
-		}
-		builder := protocol.NewAppsLookupBuilder(responseBuf, req.ItemCount, 0)
-		if req.ItemCount > 0 {
-			lens := make([]int, req.ItemCount)
-			for i := range lens {
-				lens[i] = protocol.AppsLookupItemHdr + 3
+		handlerFailed := false
+		n, err := protocol.DispatchAppsLookup(request, responseBuf, func(req *protocol.AppsLookupRequestView, builder *protocol.AppsLookupBuilder) bool {
+			ok := handle(req, builder)
+			if !ok && builder.Error() == nil {
+				handlerFailed = true
 			}
-			builder.SetPayloadExceededItemLens(lens)
-		}
-		if !handle(req, builder) {
+			return ok
+		})
+		if handlerFailed && errors.Is(err, protocol.ErrBadLayout) {
 			return 0, errHandlerFailed
 		}
-		if builder.Error() != nil {
-			return 0, builder.Error()
-		}
-		if builder.ItemCount() != req.ItemCount {
-			return 0, protocol.ErrBadItemCount
-		}
-		return builder.Finish(), nil
+		return n, err
 	}
 }

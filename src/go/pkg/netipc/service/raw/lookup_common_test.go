@@ -68,12 +68,6 @@ func TestLookupCommonSizingHelpers(t *testing.T) {
 	if _, err := checkedLookupU32(int(uint64(^uint32(0)) + 1)); !errors.Is(err, protocol.ErrOverflow) {
 		t.Fatalf("checkedLookupU32 overflow error = %v", err)
 	}
-	if _, err := lookupMinRequired(-1, 1); !errors.Is(err, protocol.ErrOverflow) {
-		t.Fatalf("lookupMinRequired negative error = %v", err)
-	}
-	if _, err := lookupMinRequired(maxInt, 1); !errors.Is(err, protocol.ErrOverflow) {
-		t.Fatalf("lookupMinRequired overflow error = %v", err)
-	}
 }
 
 func TestLookupNextRequestSizingEdges(t *testing.T) {

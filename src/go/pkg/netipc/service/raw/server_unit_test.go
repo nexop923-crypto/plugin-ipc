@@ -93,6 +93,32 @@ func TestServerCommonInitDefaultsAndWorkerSlotGuards(t *testing.T) {
 			protocol.MaxPayloadDefault,
 			protocol.MaxPayloadDefault)
 	}
+	if server.requestPayloadGrowthCeiling != protocol.MaxPayloadCap ||
+		server.responsePayloadGrowthCeiling != protocol.MaxPayloadCap {
+		t.Fatalf("default growth ceilings = %d/%d, want %d/%d",
+			server.requestPayloadGrowthCeiling,
+			server.responsePayloadGrowthCeiling,
+			protocol.MaxPayloadCap,
+			protocol.MaxPayloadCap)
+	}
+
+	var configured Server
+	configured.initCommon("run", "svc", protocol.MethodIncrement, nil, 4, 4096, 8192)
+	if configured.workerCount != 4 {
+		t.Fatalf("configured worker count = %d, want 4", configured.workerCount)
+	}
+	if configured.learnedRequestPayloadBytes.Load() != 4096 ||
+		configured.learnedResponsePayloadBytes.Load() != 8192 {
+		t.Fatalf("configured learned capacities = %d/%d, want 4096/8192",
+			configured.learnedRequestPayloadBytes.Load(),
+			configured.learnedResponsePayloadBytes.Load())
+	}
+	if configured.requestPayloadGrowthCeiling != 4096 ||
+		configured.responsePayloadGrowthCeiling != 8192 {
+		t.Fatalf("configured growth ceilings = %d/%d, want 4096/8192",
+			configured.requestPayloadGrowthCeiling,
+			configured.responsePayloadGrowthCeiling)
+	}
 
 	var cleanupCalled atomic.Bool
 	if server.retryAcceptAfter(func() { cleanupCalled.Store(true) }) {

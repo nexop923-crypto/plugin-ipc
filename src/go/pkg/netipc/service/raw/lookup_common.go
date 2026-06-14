@@ -147,18 +147,6 @@ func checkedLookupU32(value int) (uint32, error) {
 	return uint32(value), nil // #nosec G115 -- value is bounded by the uint32 maximum above.
 }
 
-func lookupMinRequired(hdrSize int, itemCount uint32) (int, error) {
-	if hdrSize < 0 {
-		return 0, protocol.ErrOverflow
-	}
-	dirSize64 := uint64(itemCount) * uint64(protocol.LookupDirEntrySize)
-	min64 := uint64(hdrSize) + dirSize64
-	if min64 > uint64(int(^uint(0)>>1)) {
-		return 0, protocol.ErrOverflow
-	}
-	return int(min64), nil
-}
-
 func cloneLookupRawItem(item []byte) []byte {
 	cloned := make([]byte, len(item))
 	copy(cloned, item)
