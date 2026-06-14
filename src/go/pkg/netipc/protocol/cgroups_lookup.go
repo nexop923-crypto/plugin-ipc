@@ -470,7 +470,7 @@ type CgroupsLookupBuilder struct {
 	dataOffset            int
 	err                   error
 	payloadExceededSuffix bool
-	payloadExceededBytes  []int
+	payloadExceededBytes  []uint32
 }
 
 func NewCgroupsLookupBuilder(buf []byte, maxItems uint32, generation uint64) *CgroupsLookupBuilder {
@@ -498,6 +498,25 @@ func (b *CgroupsLookupBuilder) SetPayloadExceededItemLens(itemLens []int) {
 }
 
 func (b *CgroupsLookupBuilder) Add(status, orchestrator uint16, path, name []byte, labels []struct{ Key, Value []byte }) error {
+	return b.add(status, orchestrator, path, name, labels, false)
+}
+
+// AddRequestItem appends a response item using a path from a decoded request.
+// The request path has already been validated by DecodeCgroupsLookupRequest.
+func (b *CgroupsLookupBuilder) AddRequestItem(req *CgroupsLookupRequestView, index uint32, status, orchestrator uint16, name []byte, labels []struct{ Key, Value []byte }) error {
+	if req == nil {
+		b.err = ErrBadLayout
+		return ErrBadLayout
+	}
+	path, err := req.Item(index)
+	if err != nil {
+		b.err = err
+		return err
+	}
+	return b.add(status, orchestrator, path.Bytes(), name, labels, true)
+}
+
+func (b *CgroupsLookupBuilder) add(status, orchestrator uint16, path, name []byte, labels []struct{ Key, Value []byte }, pathValidated bool) error {
 	if b.payloadExceededSuffix {
 		return b.addUnknown(CgroupLookupPayloadExceeded, path)
 	}
@@ -509,7 +528,7 @@ func (b *CgroupsLookupBuilder) Add(status, orchestrator uint16, path, name []byt
 		b.err = err
 		return err
 	}
-	if invalidSourceString(path, true) || invalidSourceString(name, false) {
+	if (!pathValidated && invalidSourceString(path, true)) || invalidSourceString(name, false) {
 		b.err = ErrBadLayout
 		return ErrBadLayout
 	}
@@ -744,7 +763,11 @@ func DispatchCgroupsLookup(req []byte, resp []byte, handler func(*CgroupsLookupR
 			if err != nil {
 				return 0, err
 			}
-			suffixBytes[i] = size
+			size32, ok := checkedU32Int(size)
+			if !ok {
+				return 0, ErrOverflow
+			}
+			suffixBytes[i] = size32
 		}
 		if !finishPayloadExceededSuffixBytes(suffixBytes) {
 			return 0, ErrOverflow

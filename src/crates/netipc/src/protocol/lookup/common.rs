@@ -167,26 +167,31 @@ pub(super) fn lookup_dir_entry_offset(hdr_size: usize, index: u32) -> Result<usi
 }
 
 pub(super) fn payload_exceeded_suffix_bytes_from_lens(
-    mut item_lens: Vec<usize>,
-) -> Result<Vec<usize>, NipcError> {
-    item_lens.push(0);
-    for i in (0..item_lens.len() - 1).rev() {
-        let next = item_lens[i + 1];
+    item_lens: Vec<usize>,
+) -> Result<Vec<u32>, NipcError> {
+    let capacity = item_lens.len().checked_add(1).ok_or(NipcError::Overflow)?;
+    let mut suffix_bytes = Vec::with_capacity(capacity);
+    for item_len in item_lens {
+        suffix_bytes.push(checked_u32(item_len)?);
+    }
+    suffix_bytes.push(0);
+    for i in (0..suffix_bytes.len() - 1).rev() {
+        let next = suffix_bytes[i + 1];
         let item_cost = if next > 0 {
-            item_lens[i].checked_add(7).map(|v| v & !7)
+            suffix_bytes[i].checked_add(7).map(|v| v & !7)
         } else {
-            Some(item_lens[i])
+            Some(suffix_bytes[i])
         }
         .ok_or(NipcError::Overflow)?;
-        item_lens[i] = item_cost.checked_add(next).ok_or(NipcError::Overflow)?;
+        suffix_bytes[i] = item_cost.checked_add(next).ok_or(NipcError::Overflow)?;
     }
-    Ok(item_lens)
+    Ok(suffix_bytes)
 }
 
 pub(super) fn payload_exceeded_suffix_fits(
     buf_len: usize,
     data_offset: usize,
-    suffix_bytes: &[usize],
+    suffix_bytes: &[u32],
     first_index: u32,
     max_items: u32,
 ) -> bool {
@@ -208,7 +213,43 @@ pub(super) fn payload_exceeded_suffix_fits(
     if item_start > buf_len {
         return false;
     }
-    suffix_bytes[first_index] <= buf_len - item_start
+    suffix_bytes[first_index] as usize <= buf_len - item_start
+}
+
+pub(super) fn payload_exceeded_fixed_suffix_fits(
+    buf_len: usize,
+    data_offset: usize,
+    item_len: usize,
+    first_index: u32,
+    max_items: u32,
+) -> bool {
+    let max_items = max_items as usize;
+    let first_index = first_index as usize;
+    if first_index > max_items {
+        return true;
+    }
+    if data_offset > usize::MAX - 7 {
+        return false;
+    }
+    let item_start = align8(data_offset);
+    if item_start > buf_len {
+        return false;
+    }
+    let remaining = max_items - first_index;
+    if remaining == 0 {
+        return true;
+    }
+    let Some(aligned_item_len) = item_len.checked_add(7).map(|v| v & !7) else {
+        return false;
+    };
+    let tail_items = remaining - 1;
+    let Some(tail_bytes) = tail_items.checked_mul(aligned_item_len) else {
+        return false;
+    };
+    let Some(needed) = item_len.checked_add(tail_bytes) else {
+        return false;
+    };
+    needed <= buf_len - item_start
 }
 
 pub(super) fn validate_labels(

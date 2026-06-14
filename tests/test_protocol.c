@@ -2052,9 +2052,9 @@ static bool cgroups_lookup_dispatch_handler(void *user,
     CHECK(nipc_cgroups_lookup_req_item(request, 0, &req_item) == NIPC_OK,
           "dispatch cgroups_lookup request item");
     CHECK(str_eq(req_item.path, "/x"), "dispatch cgroups_lookup request path");
-    return nipc_cgroups_lookup_builder_add(
-               builder, NIPC_CGROUP_LOOKUP_KNOWN, NIPC_ORCHESTRATOR_DOCKER,
-               "/x", 2, "docker-x", 8, NULL, 0) == NIPC_OK;
+    return nipc_cgroups_lookup_builder_add_request_item(
+               builder, request, 0, NIPC_CGROUP_LOOKUP_KNOWN,
+               NIPC_ORCHESTRATOR_DOCKER, "docker-x", 8, NULL, 0) == NIPC_OK;
 }
 
 static bool apps_lookup_dispatch_handler(void *user,
@@ -2188,6 +2188,50 @@ static void test_cgroups_lookup_req_roundtrip(void) {
           "cgroups_lookup request item 1");
     CHECK(str_eq(item.path, "/system.slice/docker-abc.scope"),
           "cgroups_lookup request item 1 path");
+}
+
+static void test_cgroups_lookup_builder_add_request_item(void) {
+    uint8_t req[128];
+    uint8_t resp[512];
+    nipc_str_view_t paths[] = { sv("/request-path") };
+    size_t req_len = nipc_cgroups_lookup_req_encode(paths, 1, req, sizeof(req));
+    CHECK(req_len > 0, "cgroups_lookup request-backed builder request encode");
+
+    nipc_cgroups_lookup_req_view_t req_view;
+    CHECK(nipc_cgroups_lookup_req_decode(req, req_len, &req_view) == NIPC_OK,
+          "cgroups_lookup request-backed builder request decode");
+
+    nipc_cgroups_lookup_builder_t b;
+    nipc_cgroups_lookup_builder_init(&b, resp, sizeof(resp), 1, 42);
+    CHECK(nipc_cgroups_lookup_builder_add_request_item(
+              &b, &req_view, 0, NIPC_CGROUP_LOOKUP_KNOWN,
+              NIPC_ORCHESTRATOR_K8S, "pod-a", 5, NULL, 0) == NIPC_OK,
+          "cgroups_lookup request-backed builder add");
+
+    size_t resp_len = nipc_cgroups_lookup_builder_finish(&b);
+    CHECK(resp_len > 0, "cgroups_lookup request-backed builder finish");
+
+    nipc_cgroups_lookup_resp_view_t resp_view;
+    CHECK(nipc_cgroups_lookup_resp_decode(resp, resp_len, &resp_view) == NIPC_OK,
+          "cgroups_lookup request-backed builder response decode");
+
+    nipc_cgroups_lookup_item_view_t item;
+    CHECK(nipc_cgroups_lookup_resp_item(&resp_view, 0, &item) == NIPC_OK,
+          "cgroups_lookup request-backed builder item");
+    CHECK(item.status == NIPC_CGROUP_LOOKUP_KNOWN,
+          "cgroups_lookup request-backed builder status");
+    CHECK(item.orchestrator == NIPC_ORCHESTRATOR_K8S,
+          "cgroups_lookup request-backed builder orchestrator");
+    CHECK(str_eq(item.path, "/request-path"),
+          "cgroups_lookup request-backed builder path");
+    CHECK(str_eq(item.name, "pod-a"), "cgroups_lookup request-backed builder name");
+
+    nipc_cgroups_lookup_builder_init(&b, resp, sizeof(resp), 1, 42);
+    CHECK(nipc_cgroups_lookup_builder_add_request_item(
+              &b, &req_view, req_view.item_count, NIPC_CGROUP_LOOKUP_KNOWN,
+              NIPC_ORCHESTRATOR_K8S, "pod-a", 5, NULL, 0) ==
+              NIPC_ERR_OUT_OF_BOUNDS,
+          "cgroups_lookup request-backed builder rejects bad index");
 }
 
 static void test_cgroups_lookup_resp_roundtrip(void) {
@@ -3441,6 +3485,7 @@ int main(void) {
 
     /* Lookup codec tests */
     test_cgroups_lookup_req_roundtrip();
+    test_cgroups_lookup_builder_add_request_item();
     test_cgroups_lookup_resp_roundtrip();
     test_cgroups_lookup_reject_bad_status();
     test_lookup_empty_requests_responses();

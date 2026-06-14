@@ -474,14 +474,14 @@ static nipc_error_t cgroups_lookup_builder_add_checked(
     nipc_cgroups_lookup_builder_t *b, uint16_t status, uint16_t orchestrator,
     const char *path, uint32_t path_len, const char *name, uint32_t name_len,
     const nipc_lookup_label_view_t *labels, uint16_t label_count,
-    bool allow_overflow_status);
+    bool path_validated, bool allow_overflow_status);
 
 static nipc_error_t
 cgroups_lookup_builder_add_overflow_item(nipc_cgroups_lookup_builder_t *b,
                                          uint16_t status, const char *path,
                                          uint32_t path_len) {
   return cgroups_lookup_builder_add_checked(b, status, 0, path, path_len, "", 0,
-                                            NULL, 0, false);
+                                            NULL, 0, true, false);
 }
 
 static nipc_error_t
@@ -500,7 +500,7 @@ static nipc_error_t cgroups_lookup_builder_add_checked(
     nipc_cgroups_lookup_builder_t *b, uint16_t status, uint16_t orchestrator,
     const char *path, uint32_t path_len, const char *name, uint32_t name_len,
     const nipc_lookup_label_view_t *labels, uint16_t label_count,
-    bool allow_overflow_status) {
+    bool path_validated, bool allow_overflow_status) {
   if (b->payload_exceeded_suffix && allow_overflow_status)
     return cgroups_lookup_builder_add_overflow_item(
         b, NIPC_CGROUP_LOOKUP_PAYLOAD_EXCEEDED, path, path_len);
@@ -520,10 +520,18 @@ static nipc_error_t cgroups_lookup_builder_add_checked(
       {.ptr = path, .len = path_len, .require_non_empty = true},
       {.ptr = name, .len = name_len, .require_non_empty = false},
   };
-  err = nipc_lookup_builder_validate_strings(strings, 2);
-  if (err != NIPC_OK) {
-    b->error = err;
-    return b->error;
+  if (path_validated) {
+    err = nipc_lookup_builder_validate_strings(&strings[1], 1);
+    if (err != NIPC_OK) {
+      b->error = err;
+      return b->error;
+    }
+  } else {
+    err = nipc_lookup_builder_validate_strings(strings, 2);
+    if (err != NIPC_OK) {
+      b->error = err;
+      return b->error;
+    }
   }
   b->error = NIPC_OK;
 
@@ -587,7 +595,27 @@ nipc_error_t nipc_cgroups_lookup_builder_add(
     const nipc_lookup_label_view_t *labels, uint16_t label_count) {
   return cgroups_lookup_builder_add_checked(b, status, orchestrator, path,
                                             path_len, name, name_len, labels,
-                                            label_count, true);
+                                            label_count, false, true);
+}
+
+nipc_error_t nipc_cgroups_lookup_builder_add_request_item(
+    nipc_cgroups_lookup_builder_t *b,
+    const nipc_cgroups_lookup_req_view_t *request, uint32_t index,
+    uint16_t status, uint16_t orchestrator, const char *name, uint32_t name_len,
+    const nipc_lookup_label_view_t *labels, uint16_t label_count) {
+  if (!request) {
+    b->error = NIPC_ERR_BAD_LAYOUT;
+    return b->error;
+  }
+  nipc_cgroups_lookup_req_item_t item;
+  nipc_error_t err = nipc_cgroups_lookup_req_item(request, index, &item);
+  if (err != NIPC_OK) {
+    b->error = err;
+    return b->error;
+  }
+  return cgroups_lookup_builder_add_checked(
+      b, status, orchestrator, item.path.ptr, item.path.len, name, name_len,
+      labels, label_count, true, true);
 }
 
 size_t nipc_cgroups_lookup_builder_finish(nipc_cgroups_lookup_builder_t *b) {

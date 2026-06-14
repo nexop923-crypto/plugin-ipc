@@ -134,42 +134,60 @@ func checkedAlign8(v int) (int, bool) {
 	return Align8(v), true
 }
 
-func buildPayloadExceededSuffixBytes(itemLens []int) ([]int, bool) {
-	suffixBytes := make([]int, len(itemLens)+1)
-	copy(suffixBytes, itemLens)
+func checkedAddU32(a, b uint32) (uint32, bool) {
+	if a > ^uint32(0)-b {
+		return 0, false
+	}
+	return a + b, true
+}
+
+func checkedAlign8U32(v uint32) (uint32, bool) {
+	aligned := (uint64(v) + 7) &^ uint64(7)
+	if aligned > uint64(^uint32(0)) {
+		return 0, false
+	}
+	return uint32(aligned), true
+}
+
+func buildPayloadExceededSuffixBytes(itemLens []int) ([]uint32, bool) {
+	suffixBytes := make([]uint32, len(itemLens)+1)
+	for i, itemLen := range itemLens {
+		itemLen32, ok := checkedU32Int(itemLen)
+		if !ok {
+			return nil, false
+		}
+		suffixBytes[i] = itemLen32
+	}
 	if !finishPayloadExceededSuffixBytes(suffixBytes) {
 		return nil, false
 	}
 	return suffixBytes, true
 }
 
-func makePayloadExceededSuffixBytes(itemCount uint32) ([]int, bool) {
+func makePayloadExceededSuffixBytes(itemCount uint32) ([]uint32, bool) {
 	count, ok := checkedInt(uint64(itemCount))
 	if !ok || count == maxIntValue() {
 		return nil, false
 	}
-	return make([]int, count+1), true
+	return make([]uint32, count+1), true
 }
 
-func finishPayloadExceededSuffixBytes(suffixBytes []int) bool {
+func finishPayloadExceededSuffixBytes(suffixBytes []uint32) bool {
 	if len(suffixBytes) == 0 {
 		return true
 	}
 	suffixBytes[len(suffixBytes)-1] = 0
 	for i := len(suffixBytes) - 2; i >= 0; i-- {
 		itemLen := suffixBytes[i]
-		if itemLen < 0 {
-			return false
-		}
 		itemCost := itemLen
 		if suffixBytes[i+1] > 0 {
 			var ok bool
-			itemCost, ok = checkedAlign8(itemLen)
+			itemCost, ok = checkedAlign8U32(itemLen)
 			if !ok {
 				return false
 			}
 		}
-		total, ok := checkedAddInt(itemCost, suffixBytes[i+1])
+		total, ok := checkedAddU32(itemCost, suffixBytes[i+1])
 		if !ok {
 			return false
 		}
@@ -178,21 +196,7 @@ func finishPayloadExceededSuffixBytes(suffixBytes []int) bool {
 	return true
 }
 
-func buildFixedPayloadExceededSuffixBytes(itemCount uint32, itemLen int) ([]int, bool) {
-	suffixBytes, ok := makePayloadExceededSuffixBytes(itemCount)
-	if !ok {
-		return nil, false
-	}
-	for i := 0; i < len(suffixBytes)-1; i++ {
-		suffixBytes[i] = itemLen
-	}
-	if !finishPayloadExceededSuffixBytes(suffixBytes) {
-		return nil, false
-	}
-	return suffixBytes, true
-}
-
-func payloadExceededSuffixFits(bufLen, dataOffset int, suffixBytes []int, first, maxItems uint32) bool {
+func payloadExceededSuffixFits(bufLen, dataOffset int, suffixBytes []uint32, first, maxItems uint32) bool {
 	maxInt := maxIntValue()
 	if uint64(maxItems) > uint64(maxInt) {
 		return true
@@ -215,8 +219,44 @@ func payloadExceededSuffixFits(bufLen, dataOffset int, suffixBytes []int, first,
 	if itemStart > bufLen {
 		return false
 	}
-	suffixBytesNeeded := suffixBytes[firstInt]
-	return suffixBytesNeeded >= 0 && suffixBytesNeeded <= bufLen-itemStart
+	suffixBytesNeeded := uint64(suffixBytes[firstInt])
+	return suffixBytesNeeded <= uint64(bufLen-itemStart)
+}
+
+func payloadExceededFixedSuffixFits(bufLen, dataOffset, itemLen int, first, maxItems uint32) bool {
+	maxInt := maxIntValue()
+	if uint64(maxItems) > uint64(maxInt) {
+		return true
+	}
+	if uint64(first) > uint64(maxInt) {
+		return false
+	}
+	if first > maxItems {
+		return true
+	}
+	if dataOffset < 0 || dataOffset > maxInt-7 || itemLen < 0 {
+		return false
+	}
+	itemStart := Align8(dataOffset)
+	if itemStart > bufLen {
+		return false
+	}
+	remaining := uint64(maxItems - first)
+	if remaining == 0 {
+		return true
+	}
+	alignedItemLen, ok := checkedAlign8(itemLen)
+	if !ok {
+		return false
+	}
+	itemLenBytes := uint64(itemLen)
+	alignedItemBytes := uint64(alignedItemLen)
+	tailItems := remaining - 1
+	if alignedItemBytes != 0 && tailItems > (^uint64(0)-itemLenBytes)/alignedItemBytes {
+		return false
+	}
+	needed := itemLenBytes + tailItems*alignedItemBytes
+	return needed <= uint64(bufLen-itemStart)
 }
 
 func validateLookupDir(buf []byte, dirStart int, itemCount uint32, packedAreaLen int, minLen int, exactLen int) error {

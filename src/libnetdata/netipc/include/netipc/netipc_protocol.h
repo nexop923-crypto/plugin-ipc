@@ -615,6 +615,11 @@ nipc_error_t nipc_cgroups_lookup_builder_add(
     nipc_cgroups_lookup_builder_t *b, uint16_t status, uint16_t orchestrator,
     const char *path, uint32_t path_len, const char *name, uint32_t name_len,
     const nipc_lookup_label_view_t *labels, uint16_t label_count);
+nipc_error_t nipc_cgroups_lookup_builder_add_request_item(
+    nipc_cgroups_lookup_builder_t *b,
+    const nipc_cgroups_lookup_req_view_t *request, uint32_t index,
+    uint16_t status, uint16_t orchestrator, const char *name, uint32_t name_len,
+    const nipc_lookup_label_view_t *labels, uint16_t label_count);
 size_t nipc_cgroups_lookup_builder_finish(nipc_cgroups_lookup_builder_t *b);
 
 size_t nipc_apps_lookup_req_encode(const uint32_t *pids, uint32_t item_count,

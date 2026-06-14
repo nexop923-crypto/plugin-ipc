@@ -238,6 +238,24 @@ The wire decoder validates structure. The typed client must also verify:
 An echoed-path mismatch is a server bug and the typed client must fail
 the response.
 
+## Response Builder Guidance
+
+Servers often echo the request path into each response item. In that case,
+prefer the request-backed response builder entry point in each language:
+
+- C: `nipc_cgroups_lookup_builder_add_request_item()`
+- Rust: `CgroupsLookupBuilder::add_request_item()`
+- Go: `CgroupsLookupBuilder.AddRequestItem()`
+
+These APIs read the path from a decoded `CGROUPS_LOOKUP` request view. The
+request decoder has already validated the path string, so the builder can
+avoid scanning the same path bytes again while still validating all raw
+application-owned fields such as the returned name and labels.
+
+Use the raw builder `add` / `Add` entry point when the response path did not
+come from the decoded request view. Raw entry points must continue validating
+the supplied bytes.
+
 ## Security Considerations
 
 Request paths are opaque lookup keys. A server must not resolve,

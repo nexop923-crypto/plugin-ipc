@@ -1421,15 +1421,12 @@ func runLookupMethodBench(durationSec int, scenario string, targetRPS uint64) in
 			if err == nil {
 				respLen, err = protocol.DispatchCgroupsLookup(reqBuf[:reqLen], respBuf, func(req *protocol.CgroupsLookupRequestView, builder *protocol.CgroupsLookupBuilder) bool {
 					for i := uint32(0); i < req.ItemCount; i++ {
-						path, ierr := req.Item(i)
-						if ierr != nil {
-							return false
-						}
 						if lookupVariantIsKnown(variant, int(i)) {
-							if berr := builder.Add(
+							if berr := builder.AddRequestItem(
+								req,
+								i,
 								protocol.CgroupLookupKnown,
 								protocol.OrchestratorK8s,
-								path.Bytes(),
 								[]byte("bench-pod"),
 								[]struct{ Key, Value []byte }{
 									{Key: []byte("namespace"), Value: []byte("bench")},
@@ -1438,10 +1435,11 @@ func runLookupMethodBench(durationSec int, scenario string, targetRPS uint64) in
 							); berr != nil {
 								return false
 							}
-						} else if berr := builder.Add(
+						} else if berr := builder.AddRequestItem(
+							req,
+							i,
 							protocol.CgroupLookupUnknownRetryLater,
 							0,
-							path.Bytes(),
 							nil,
 							nil,
 						); berr != nil {

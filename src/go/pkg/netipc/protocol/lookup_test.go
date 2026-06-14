@@ -1470,11 +1470,7 @@ func TestLookupDispatchCoverage(t *testing.T) {
 	}
 	n, err := DispatchCgroupsLookup(req[:reqLen], resp[:], func(request *CgroupsLookupRequestView, builder *CgroupsLookupBuilder) bool {
 		for i := uint32(0); i < request.ItemCount; i++ {
-			path, err := request.Item(i)
-			if err != nil {
-				return false
-			}
-			if err := builder.Add(CgroupLookupKnown, OrchestratorDocker, path.Bytes(), []byte("name"), nil); err != nil {
+			if err := builder.AddRequestItem(request, i, CgroupLookupKnown, OrchestratorDocker, []byte("name"), nil); err != nil {
 				return false
 			}
 		}
@@ -1485,6 +1481,13 @@ func TestLookupDispatchCoverage(t *testing.T) {
 	}
 	if _, err := DecodeCgroupsLookupResponse(resp[:n]); err != nil {
 		t.Fatalf("decode dispatched cgroups response: %v", err)
+	}
+	n, err = DispatchCgroupsLookup(req[:reqLen], resp[:], func(request *CgroupsLookupRequestView, builder *CgroupsLookupBuilder) bool {
+		_ = builder.AddRequestItem(request, request.ItemCount, CgroupLookupKnown, OrchestratorDocker, []byte("name"), nil)
+		return true
+	})
+	if err != ErrOutOfBounds || n != 0 {
+		t.Fatalf("dispatch cgroups request item out of bounds = n %d err %v, want ErrOutOfBounds", n, err)
 	}
 	n, err = DispatchCgroupsLookup(req[:reqLen], resp[:], func(*CgroupsLookupRequestView, *CgroupsLookupBuilder) bool {
 		return false

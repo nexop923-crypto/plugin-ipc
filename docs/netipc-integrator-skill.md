@@ -269,6 +269,18 @@ Wire-format footguns for lookup methods:
 - C code must use explicit wire-size constants; the 60-byte
   `APPS_LOOKUP` item header naturally pads to 64 bytes as a C struct
 
+Lookup handler builder rule:
+
+- When a `cgroups-lookup` handler echoes a path from the decoded request into
+  the response, use the request-backed builder API:
+  - C: `nipc_cgroups_lookup_builder_add_request_item()`
+  - Rust: `CgroupsLookupBuilder::add_request_item()`
+  - Go: `CgroupsLookupBuilder.AddRequestItem()`
+- Use the raw `add` / `Add` APIs only for application-owned path bytes that did
+  not come from the decoded request view.
+- This preserves corruption checks for raw inputs while avoiding a second scan
+  of already-decoded request paths in hot lookup paths.
+
 ## Netdata Integration Model
 
 The intended Netdata pattern is:

@@ -1136,20 +1136,15 @@ static bool cgroups_lookup_bench_handler(void *user,
     };
 
     for (uint32_t i = 0; i < request->item_count; i++) {
-        nipc_cgroups_lookup_req_item_t item;
-        if (nipc_cgroups_lookup_req_item(request, i, &item) != NIPC_OK)
-            return false;
-
         if (lookup_variant_is_known(ctx->variant, i)) {
-            if (nipc_cgroups_lookup_builder_add(
-                    builder, NIPC_CGROUP_LOOKUP_KNOWN, NIPC_ORCHESTRATOR_K8S,
-                    item.path.ptr, item.path.len,
+            if (nipc_cgroups_lookup_builder_add_request_item(
+                    builder, request, i, NIPC_CGROUP_LOOKUP_KNOWN,
+                    NIPC_ORCHESTRATOR_K8S,
                     "bench-pod", 9, labels, 2) != NIPC_OK)
                 return false;
         } else {
-            if (nipc_cgroups_lookup_builder_add(
-                    builder, NIPC_CGROUP_LOOKUP_UNKNOWN_RETRY_LATER, 0,
-                    item.path.ptr, item.path.len,
+            if (nipc_cgroups_lookup_builder_add_request_item(
+                    builder, request, i, NIPC_CGROUP_LOOKUP_UNKNOWN_RETRY_LATER, 0,
                     "", 0, NULL, 0) != NIPC_OK)
                 return false;
         }

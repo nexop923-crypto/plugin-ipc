@@ -65,28 +65,17 @@ type appsLookupSemantics struct {
 }
 
 func validateAppsLookupSemantics(v appsLookupSemantics) error {
-	if err := validateAppsLookupDomains(v.status, v.cgroupStatus, v.commLen); err != nil {
-		return err
+	if v.commLen > 15 {
+		return ErrBadLayout
 	}
-	if v.status != PidLookupKnown {
+	switch v.status {
+	case PidLookupKnown:
+		return validateAppsLookupKnown(v)
+	case PidLookupUnknown, PidLookupPayloadExceeded, PidLookupOversizedItem:
 		return validateAppsLookupUnknown(v)
-	}
-	return validateAppsLookupKnown(v)
-}
-
-func validateAppsLookupDomains(status, cgroupStatus uint16, commLen int) error {
-	if status != PidLookupKnown && status != PidLookupUnknown &&
-		status != PidLookupPayloadExceeded && status != PidLookupOversizedItem {
+	default:
 		return ErrBadLayout
 	}
-	if cgroupStatus != AppsCgroupKnown && cgroupStatus != AppsCgroupUnknownRetryLater &&
-		cgroupStatus != AppsCgroupUnknownPermanent && cgroupStatus != AppsCgroupHostRoot {
-		return ErrBadLayout
-	}
-	if commLen > 15 {
-		return ErrBadLayout
-	}
-	return nil
 }
 
 func validateAppsLookupUnknown(v appsLookupSemantics) error {
@@ -118,6 +107,8 @@ func validateAppsLookupKnown(v appsLookupSemantics) error {
 		if v.orchestrator != 0 || v.pathLen != 0 || v.nameLen != 0 || v.labelCount != 0 {
 			return ErrBadLayout
 		}
+	default:
+		return ErrBadLayout
 	}
 	return nil
 }
@@ -575,7 +566,8 @@ type AppsLookupBuilder struct {
 	dataOffset            int
 	err                   error
 	payloadExceededSuffix bool
-	payloadExceededBytes  []int
+	payloadExceededBytes  []uint32
+	payloadExceededFixed  int
 }
 
 func NewAppsLookupBuilder(buf []byte, maxItems uint32, generation uint64) *AppsLookupBuilder {
@@ -600,6 +592,7 @@ func (b *AppsLookupBuilder) SetPayloadExceededItemLens(itemLens []int) {
 		return
 	}
 	b.payloadExceededBytes = suffixBytes
+	b.payloadExceededFixed = 0
 }
 
 // Add appends one APPS_LOOKUP wire item; parameters mirror the fixed protocol fields.
@@ -682,7 +675,7 @@ func (b *AppsLookupBuilder) Add(status, cgroupStatus, orchestrator uint16, pid, 
 	if !ok || itemEnd > len(b.buf) {
 		return b.noteItemOverflow(pid)
 	}
-	if !payloadExceededSuffixFits(len(b.buf), itemEnd, b.payloadExceededBytes, b.itemCount+1, b.maxItems) {
+	if !b.payloadExceededSuffixFits(itemEnd) {
 		return b.noteItemOverflow(pid)
 	}
 	commOff32, ok := checkedU32Int(commOff)
@@ -771,6 +764,13 @@ func (b *AppsLookupBuilder) Add(status, cgroupStatus, orchestrator uint16, pid, 
 	return nil
 }
 
+func (b *AppsLookupBuilder) payloadExceededSuffixFits(dataOffset int) bool {
+	if b.payloadExceededFixed > 0 {
+		return payloadExceededFixedSuffixFits(len(b.buf), dataOffset, b.payloadExceededFixed, b.itemCount+1, b.maxItems)
+	}
+	return payloadExceededSuffixFits(len(b.buf), dataOffset, b.payloadExceededBytes, b.itemCount+1, b.maxItems)
+}
+
 func (b *AppsLookupBuilder) addUnknown(status uint16, pid uint32) error {
 	itemStart, ok := checkedAlign8(b.dataOffset)
 	if !ok {
@@ -847,11 +847,7 @@ func DispatchAppsLookup(req []byte, resp []byte, handler func(*AppsLookupRequest
 	}
 	builder := NewAppsLookupBuilder(resp, request.ItemCount, 0)
 	if request.ItemCount > 0 {
-		suffixBytes, ok := buildFixedPayloadExceededSuffixBytes(request.ItemCount, appsLookupUnknownItemSize)
-		if !ok {
-			return 0, ErrOverflow
-		}
-		builder.payloadExceededBytes = suffixBytes
+		builder.payloadExceededFixed = appsLookupUnknownItemSize
 	}
 	if !handler(request, builder) {
 		if builder.Error() != nil {

@@ -338,7 +338,7 @@ pub struct CgroupsLookupBuilder<'a> {
     data_offset: usize,
     error: Option<NipcError>,
     payload_exceeded_suffix: bool,
-    payload_exceeded_suffix_bytes: Vec<usize>,
+    payload_exceeded_suffix_bytes: Vec<u32>,
 }
 
 impl<'a> CgroupsLookupBuilder<'a> {
@@ -382,6 +382,31 @@ impl<'a> CgroupsLookupBuilder<'a> {
         name: &[u8],
         labels: &[(&[u8], &[u8])],
     ) -> Result<(), NipcError> {
+        self.add_with_path(status, orchestrator, path, name, labels, false)
+    }
+
+    pub fn add_request_item(
+        &mut self,
+        request: &CgroupsLookupRequestView,
+        index: u32,
+        status: u16,
+        orchestrator: u16,
+        name: &[u8],
+        labels: &[(&[u8], &[u8])],
+    ) -> Result<(), NipcError> {
+        let path = request.item(index)?;
+        self.add_with_path(status, orchestrator, path.as_bytes(), name, labels, true)
+    }
+
+    fn add_with_path(
+        &mut self,
+        status: u16,
+        orchestrator: u16,
+        path: &[u8],
+        name: &[u8],
+        labels: &[(&[u8], &[u8])],
+        path_validated: bool,
+    ) -> Result<(), NipcError> {
         if self.payload_exceeded_suffix {
             return self.add_non_known_item(CGROUP_LOOKUP_PAYLOAD_EXCEEDED, path);
         }
@@ -399,7 +424,9 @@ impl<'a> CgroupsLookupBuilder<'a> {
             self.error = Some(err);
             return Err(err);
         }
-        if source_string_invalid(path, true) || source_string_invalid(name, false) {
+        if (!path_validated && source_string_invalid(path, true))
+            || source_string_invalid(name, false)
+        {
             self.error = Some(NipcError::BadLayout);
             return Err(NipcError::BadLayout);
         }
@@ -675,6 +702,45 @@ mod tests {
         assert_eq!(view.item_count, 2);
         assert_eq!(view.item(0).unwrap().as_bytes(), b"/a/b");
         assert_eq!(view.item(1).unwrap().as_bytes(), b"/c");
+    }
+
+    #[test]
+    fn cgroups_lookup_builder_add_request_item() {
+        let mut req = [0u8; 128];
+        let req_len = encode_cgroups_lookup_request(&[b"/request-path"], &mut req).unwrap();
+        let request = CgroupsLookupRequestView::decode(&req[..req_len]).unwrap();
+
+        let mut resp = [0u8; 256];
+        let mut builder = CgroupsLookupBuilder::new(&mut resp, 1, 42);
+        builder
+            .add_request_item(
+                &request,
+                0,
+                CGROUP_LOOKUP_KNOWN,
+                ORCHESTRATOR_K8S,
+                b"pod-a",
+                &[],
+            )
+            .unwrap();
+        let n = builder.finish().unwrap();
+        let view = CgroupsLookupResponseView::decode(&resp[..n]).unwrap();
+        let item = view.item(0).unwrap();
+        assert_eq!(item.path.as_bytes(), b"/request-path");
+        assert_eq!(item.name.as_bytes(), b"pod-a");
+
+        let mut resp = [0u8; 256];
+        let mut builder = CgroupsLookupBuilder::new(&mut resp, 1, 42);
+        assert_eq!(
+            builder.add_request_item(
+                &request,
+                request.item_count,
+                CGROUP_LOOKUP_KNOWN,
+                ORCHESTRATOR_K8S,
+                b"pod-a",
+                &[],
+            ),
+            Err(NipcError::OutOfBounds)
+        );
     }
 
     #[test]

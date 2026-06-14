@@ -1540,19 +1540,17 @@ mod posix_only {
                         &mut resp_buf,
                         |req, builder: &mut CgroupsLookupBuilder| {
                             for i in 0..req.item_count {
-                                let Ok(path) = req.item(i) else {
-                                    return false;
-                                };
                                 if lookup_variant_is_known(variant, i as usize) {
                                     let labels: [(&[u8], &[u8]); 2] = [
                                         (&b"namespace"[..], &b"bench"[..]),
                                         (&b"image"[..], &b"bench:latest"[..]),
                                     ];
                                     if builder
-                                        .add(
+                                        .add_request_item(
+                                            req,
+                                            i,
                                             CGROUP_LOOKUP_KNOWN,
                                             ORCHESTRATOR_K8S,
-                                            path.as_bytes(),
                                             b"bench-pod",
                                             &labels,
                                         )
@@ -1561,10 +1559,11 @@ mod posix_only {
                                         return false;
                                     }
                                 } else if builder
-                                    .add(
+                                    .add_request_item(
+                                        req,
+                                        i,
                                         CGROUP_LOOKUP_UNKNOWN_RETRY_LATER,
                                         0,
-                                        path.as_bytes(),
                                         b"",
                                         &[],
                                     )

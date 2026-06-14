@@ -64,20 +64,26 @@ func TestLookupSyntheticArithmeticGuards(t *testing.T) {
 	if suffixBytes, ok := buildPayloadExceededSuffixBytes([]int{4, 4}); !ok || len(suffixBytes) != 3 || suffixBytes[0] != 12 || suffixBytes[1] != 4 || suffixBytes[2] != 0 {
 		t.Fatalf("suffix bytes = %v ok=%v, want [12 4 0] true", suffixBytes, ok)
 	}
-	if payloadExceededSuffixFits(16, 0, []int{1}, 0, 2) != true {
+	if payloadExceededSuffixFits(16, 0, []uint32{1}, 0, 2) != true {
 		t.Fatal("mismatched suffix byte table should be treated as non-actionable")
 	}
-	if payloadExceededSuffixFits(16, 0, []int{1, 0}, 2, 1) != true {
+	if payloadExceededSuffixFits(16, 0, []uint32{1, 0}, 2, 1) != true {
 		t.Fatal("suffix starting after max items should fit vacuously")
 	}
-	if payloadExceededSuffixFits(16, maxInt, []int{1, 0}, 0, 1) != false {
+	if payloadExceededSuffixFits(16, maxInt, []uint32{1, 0}, 0, 1) != false {
 		t.Fatal("suffix with overflowing alignment should not fit")
 	}
-	if payloadExceededSuffixFits(16, 0, []int{maxInt, 0}, 0, 1) != false {
+	if payloadExceededSuffixFits(16, 0, []uint32{^uint32(0), 0}, 0, 1) != false {
 		t.Fatal("suffix with overflowing item end should not fit")
 	}
-	if payloadExceededSuffixFits(16, 0, []int{12, 4, 0}, 1, 2) != true {
+	if payloadExceededSuffixFits(16, 0, []uint32{12, 4, 0}, 1, 2) != true {
 		t.Fatal("valid suffix should fit")
+	}
+	if !payloadExceededFixedSuffixFits(16, 0, 4, 1, 2) {
+		t.Fatal("valid fixed suffix should fit")
+	}
+	if payloadExceededFixedSuffixFits(11, 0, 4, 0, 2) {
+		t.Fatal("oversized fixed suffix should not fit")
 	}
 
 	if _, _, _, _, _, _, ok := lookupLabelWriteLayout(-1, 1, 1); ok {
@@ -1892,7 +1898,7 @@ func TestLookupThirtyTwoBitGuardCoverage(t *testing.T) {
 	if got := payloadExceededSuffixFits(0, 0, nil, 0, hugeLookupItems); !got {
 		t.Fatal("payloadExceededSuffixFits should ignore unrepresentable maxItems")
 	}
-	if got := payloadExceededSuffixFits(0, 0, make([]int, 2), overMaxInt, 1); got {
+	if got := payloadExceededSuffixFits(0, 0, make([]uint32, 2), overMaxInt, 1); got {
 		t.Fatal("payloadExceededSuffixFits should reject unrepresentable first index")
 	}
 

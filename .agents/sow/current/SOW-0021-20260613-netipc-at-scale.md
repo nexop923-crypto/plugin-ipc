@@ -1187,6 +1187,116 @@ Current interpretation:
 - Go remains materially slower than C/Rust in these codec+dispatch microbenchmarks. The obvious avoidable algorithmic and allocation issues found so far are fixed, but the remaining gap still needs full-suite benchmark confirmation and, if required, profiling before declaring it inherent Go/runtime overhead.
 - This checkpoint does not close the performance gate. Full POSIX and Windows benchmark regeneration still needs to be run cleanly after commit/push.
 
+## 8192-Item Profiling Checkpoint - 2026-06-15
+
+Context:
+
+- Netdata can call lookup APIs with arrays of `8192` entries on large HPC systems.
+- The `8192` case must be treated as normal scale, not as an exceptional or degraded path.
+- The benchmarked loop is relevant to Level 2 consumers: it encodes the request, dispatches through the typed builder, and decodes/validates the response.
+
+Profiling evidence before this checkpoint's additional fixes:
+
+- `perf stat` on `build-bench-posix/bin/bench_posix_go lookup-method-bench 5 cgroups-lookup-mixed-8192 0` reported `cgroups-lookup-mixed-8192,go,go,1185,...,99.0` and about `99%` CPU. This is CPU-bound, not wait-bound.
+- Isolated Go pprof benchmark before the allocation fix:
+  - `BenchmarkProfileCgroupsLookupMixed8192`: about `967462 ns/op`, `73920 B/op`, `4 allocs/op`.
+  - `BenchmarkProfileAppsLookupMixed8192`: about `782743 ns/op`, `73920 B/op`, `4 allocs/op`.
+- Go memory profiles showed `makePayloadExceededSuffixBytes` accounting for about `97%-99%` of allocated bytes in both apps and cgroups lookup dispatch.
+- Go CPU profiles showed the remaining cgroups cost concentrated in:
+  - `CgroupsLookupBuilder.Add`, about `40%` cumulative;
+  - string/NUL scanning through `bytes.IndexByte`/`indexbytebody`;
+  - response decode validation, about `25%` cumulative;
+  - defensive checked arithmetic and directory/payload slice validation.
+- Go CPU profiles showed the remaining apps cost concentrated in:
+  - `AppsLookupBuilder.Add`, about `47%` cumulative;
+  - `validateAppsLookupItem`, about `29%` cumulative;
+  - `validateAppsLookupSemantics`, about `13%` cumulative before the safe status-switch cleanup.
+
+Fixes made in this checkpoint:
+
+- Go:
+  - APPS_LOOKUP dispatch-owned overflow suffix fitting now uses a fixed-size formula instead of allocating an item-count suffix table.
+  - CGROUPS_LOOKUP suffix bytes now use `uint32`, matching the protocol/C representation and halving the table size on 64-bit Go.
+  - APPS_LOOKUP semantic validation now uses a status switch while preserving the existing invalid cgroup-status rejection behavior.
+- Rust:
+  - APPS_LOOKUP dispatch-owned overflow suffix fitting now uses a fixed-size formula instead of allocating a suffix vector.
+  - Lookup suffix bytes now use `u32` instead of `usize`, matching the protocol/C representation.
+
+Validation evidence:
+
+- `cd src/go && go test -count=1 ./pkg/netipc/protocol` passed.
+- `cargo test --manifest-path src/crates/netipc/Cargo.toml protocol::lookup -- --test-threads=1` passed.
+- `cd src/go && go test -count=1 ./pkg/netipc/...` passed.
+- `cargo test --manifest-path src/crates/netipc/Cargo.toml -- --test-threads=1` passed with `374 passed`.
+- `cmake --build build --target test_protocol -j24 && build/bin/test_protocol` passed with `514 passed, 0 failed`.
+- Isolated Go benchmark after fixes:
+  - `BenchmarkProfileCgroupsLookupMixed8192`: about `883683 ns/op`, `41152 B/op`, `4 allocs/op`.
+  - `BenchmarkProfileAppsLookupMixed8192`: about `689551 ns/op`, `208 B/op`, `3 allocs/op`.
+- Rebuilt release benchmark sample after fixes:
+  - `cgroups-lookup-mixed-8192`: C about `1917`, Rust about `1426`, Go about `1081` requests/s.
+  - `apps-lookup-mixed-8192`: C about `2174`, Rust about `1928`, Go about `1422` requests/s.
+
+Current interpretation:
+
+- The avoidable Go allocation problem is fixed for APPS_LOOKUP and materially reduced for CGROUPS_LOOKUP.
+- Rust now matches the protocol-sized suffix representation, but its `8192` cgroups gap remains CPU-bound rather than allocation-bound in the sampled benchmark.
+- Go remains materially slower than C/Rust at `8192`, especially for CGROUPS_LOOKUP.
+- The main remaining cgroups-specific Go cost is duplicated string validation: request decode validates each path, then handlers commonly pass the validated `CStringView.Bytes()` back to `builder.Add`, which validates the same path bytes again because the public builder API accepts raw `[]byte`.
+- Avoiding that duplicated cgroups scan safely requires an explicit design/API choice, such as an internal dispatch helper or a public builder path that accepts already-validated `CStringView` data. This was not changed in this checkpoint because silently trusting raw `[]byte` would weaken corruption detection.
+- The performance gate remains open.
+
+Decision - validated cgroups builder path:
+
+- The duplicated cgroups path scan is a code-organization problem, not a Go-specific runtime issue.
+- The accepted design is:
+  - keep the existing raw public builder methods safe and validating;
+  - split validation from item layout/wire writing internally;
+  - add/use an already-validated cgroups path flow for request-derived paths;
+  - preserve corruption detection for raw application input and peer-decoded response data;
+  - apply the same organization in Go, Rust, and C.
+- This design must not silently trust arbitrary raw byte slices. Any validated path entry point must be backed by a decoder-produced view or an internal request item path whose provenance is known.
+
+Implementation update after the decision:
+
+- Added request-backed cgroups response builder entry points in all three SDKs:
+  - C: `nipc_cgroups_lookup_builder_add_request_item()`
+  - Rust: `CgroupsLookupBuilder::add_request_item()`
+  - Go: `CgroupsLookupBuilder.AddRequestItem()`
+- Kept the raw builder entry points validating raw application bytes.
+- Split internal builder logic so item layout/wire writing can be shared while path validation is skipped only for decoded request-view paths.
+- Updated C, Rust, and Go benchmark cgroups handlers to use the request-backed builder path.
+- Added direct C/Rust/Go protocol tests for request-backed builder success and invalid-index rejection.
+- Updated `docs/codec-cgroups-lookup.md` and `docs/netipc-integrator-skill.md` so future cgroups-lookup handlers use the request-backed builder only when echoing decoded request paths.
+
+Validation evidence after the request-backed builder update:
+
+- `gofmt -w bench/drivers/go/main.go src/go/pkg/netipc/protocol/cgroups_lookup.go src/go/pkg/netipc/protocol/apps_lookup.go src/go/pkg/netipc/protocol/lookup_common.go src/go/pkg/netipc/protocol/lookup_guard_test.go src/go/pkg/netipc/protocol/lookup_test.go` passed.
+- `cargo fmt --manifest-path src/crates/netipc/Cargo.toml --all` passed.
+- `git diff --check` passed.
+- `cmake --build build --target test_protocol -j24 && build/bin/test_protocol` passed with `525 passed, 0 failed`.
+- `cd src/go && go test -count=1 -timeout=300s ./pkg/netipc/protocol` passed.
+- `cargo test --manifest-path src/crates/netipc/Cargo.toml protocol::lookup -- --test-threads=1` passed with `17 passed`.
+- `cd src/go && go test -count=1 -timeout=300s ./pkg/netipc/...` passed.
+- `cargo test --manifest-path src/crates/netipc/Cargo.toml -- --test-threads=1` passed with `375 passed`.
+- `/usr/bin/ctest --test-dir build --output-on-failure` passed with `48/48` tests. The unqualified `ctest` command failed first because the workstation's `~/.local/bin/ctest` Python wrapper could not import `cmake`; the system CTest binary was then used successfully.
+- `cmake --build build-bench-posix --target bench_posix_c bench_posix_go bench_posix_rs -j24` passed.
+
+Focused POSIX release benchmark samples after the request-backed builder update:
+
+- `build-bench-posix/bin/bench_posix_c lookup-method-bench 10 cgroups-lookup-mixed-8192 0`: `2079 req/s`, p50 `440 us`, p95 `708 us`, p99 `871 us`.
+- `src/crates/netipc/target/release/bench_posix lookup-method-bench 10 cgroups-lookup-mixed-8192 0`: `1655 req/s`, p50 `572 us`, p95 `814 us`, p99 `965 us`.
+- `build-bench-posix/bin/bench_posix_go lookup-method-bench 10 cgroups-lookup-mixed-8192 0`: `1204 req/s`, p50 `767 us`, p95 `1261 us`, p99 `1479 us`.
+- `build-bench-posix/bin/bench_posix_c lookup-method-bench 10 apps-lookup-mixed-8192 0`: `2175 req/s`, p50 `424 us`, p95 `655 us`, p99 `782 us`.
+- `src/crates/netipc/target/release/bench_posix lookup-method-bench 10 apps-lookup-mixed-8192 0`: `1802 req/s`, p50 `517 us`, p95 `763 us`, p99 `846 us`.
+- `build-bench-posix/bin/bench_posix_go lookup-method-bench 10 apps-lookup-mixed-8192 0`: `1440 req/s`, p50 `633 us`, p95 `1096 us`, p99 `1190 us`.
+
+Current interpretation:
+
+- The request-backed cgroups builder removes the unsafe/code-smelly reason for double-validating decoded request paths in C, Rust, and Go.
+- Go cgroups throughput improved in the focused sample and no longer carries the avoidable request-path revalidation penalty in the benchmark handler.
+- Go remains slower than C/Rust in these microbenchmarks. That residual gap is now more likely runtime/allocation/implementation overhead outside the specific duplicated path scan, but this is a working theory until a fresh full benchmark/profile pass is reviewed.
+- These focused samples do not replace full POSIX and Windows benchmark regeneration before SOW close.
+
 ## Downstream Vendoring Plan
 
 Purpose:
