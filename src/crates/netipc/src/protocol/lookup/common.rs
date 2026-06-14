@@ -166,6 +166,38 @@ pub(super) fn lookup_dir_entry_offset(hdr_size: usize, index: u32) -> Result<usi
         .ok_or(NipcError::BadItemCount)
 }
 
+pub(super) fn payload_exceeded_suffix_fits(
+    buf_len: usize,
+    mut data_offset: usize,
+    item_lens: &[usize],
+    first_index: u32,
+    max_items: u32,
+) -> bool {
+    if item_lens.len() != max_items as usize {
+        return true;
+    }
+    for item_len in item_lens
+        .iter()
+        .take(max_items as usize)
+        .skip(first_index as usize)
+    {
+        let Some(item_start) = data_offset.checked_add(7).map(|v| v & !7) else {
+            return false;
+        };
+        if item_start > buf_len {
+            return false;
+        }
+        let Some(item_end) = item_start.checked_add(*item_len) else {
+            return false;
+        };
+        if item_end > buf_len {
+            return false;
+        }
+        data_offset = item_end;
+    }
+    true
+}
+
 pub(super) fn validate_labels(
     item: &[u8],
     hdr_size: usize,

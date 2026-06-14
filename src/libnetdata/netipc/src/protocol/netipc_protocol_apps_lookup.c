@@ -1,5 +1,7 @@
 #include "netipc_protocol_apps_lookup_internal.h"
 
+#include <stdlib.h>
+
 _Static_assert(sizeof(nipc_apps_lookup_key_wire_t) == NIPC_APPS_LOOKUP_KEY_SIZE,
                "apps lookup key must be 8 bytes");
 _Static_assert(offsetof(nipc_apps_lookup_key_wire_t, pid) == 0, "");
@@ -503,6 +505,33 @@ void nipc_apps_lookup_builder_set_generation(nipc_apps_lookup_builder_t *b,
   b->generation = generation;
 }
 
+void nipc_apps_lookup_builder_set_payload_exceeded_item_lens(
+    nipc_apps_lookup_builder_t *b, const uint32_t *item_lens,
+    uint32_t item_count) {
+  b->payload_exceeded_item_lens = item_lens;
+  b->payload_exceeded_item_lens_count = item_count;
+}
+
+static bool apps_lookup_builder_suffix_fits(const nipc_apps_lookup_builder_t *b,
+                                            size_t data_offset,
+                                            uint32_t first_index) {
+  if (!b->payload_exceeded_item_lens ||
+      b->payload_exceeded_item_lens_count != b->max_items)
+    return true;
+
+  for (uint32_t i = first_index; i < b->max_items; i++) {
+    size_t item_start = nipc_align8(data_offset);
+    if (item_start < data_offset || item_start > b->buf_len)
+      return false;
+    uint32_t item_len = b->payload_exceeded_item_lens[i];
+    if ((size_t)item_len > b->buf_len - item_start)
+      return false;
+    data_offset = item_start + (size_t)item_len;
+  }
+
+  return true;
+}
+
 uint32_t nipc_apps_lookup_builder_estimate_max_items(size_t buf_len) {
   if (buf_len <= NIPC_APPS_LOOKUP_RESP_HDR_SIZE)
     return 0;
@@ -585,6 +614,10 @@ static nipc_error_t apps_lookup_builder_add_checked(
 
   size_t item_start = (size_t)layout.item_start;
   size_t item_size = (size_t)layout.item_size;
+  if (allow_overflow_status &&
+      !apps_lookup_builder_suffix_fits(b, item_start + item_size,
+                                       b->item_count + 1u))
+    return apps_lookup_builder_note_item_overflow(b, pid);
 
   if (item_start > b->data_offset)
     memset(b->buf + b->data_offset, 0, item_start - b->data_offset);
@@ -658,21 +691,44 @@ nipc_error_t nipc_dispatch_apps_lookup(const uint8_t *req, size_t req_len,
   if (err != NIPC_OK)
     return err;
 
+  uint32_t *payload_exceeded_lens = NULL;
+  if (request.item_count > 0) {
+    if ((size_t)request.item_count >
+        ((size_t)-1) / sizeof(*payload_exceeded_lens))
+      return NIPC_ERR_OVERFLOW;
+    payload_exceeded_lens =
+        (uint32_t *)malloc((size_t)request.item_count *
+                           sizeof(*payload_exceeded_lens));
+    if (!payload_exceeded_lens)
+      return NIPC_ERR_OVERFLOW;
+    for (uint32_t i = 0; i < request.item_count; i++)
+      payload_exceeded_lens[i] = NIPC_APPS_LOOKUP_ITEM_HDR_SIZE + 3u;
+  }
+
   nipc_apps_lookup_builder_t builder;
   nipc_apps_lookup_builder_init(&builder, resp, resp_size, request.item_count,
                                 0);
+  nipc_apps_lookup_builder_set_payload_exceeded_item_lens(
+      &builder, payload_exceeded_lens, request.item_count);
 
   if (!handler(user, &request, &builder)) {
-    if (builder.error != NIPC_OK)
-      return builder.error;
-    return NIPC_ERR_HANDLER_FAILED;
+    err = builder.error != NIPC_OK ? builder.error : NIPC_ERR_HANDLER_FAILED;
+    goto cleanup;
   }
 
-  if (builder.error != NIPC_OK)
-    return builder.error;
-  if (builder.item_count != request.item_count)
-    return NIPC_ERR_BAD_ITEM_COUNT;
+  if (builder.error != NIPC_OK) {
+    err = builder.error;
+    goto cleanup;
+  }
+  if (builder.item_count != request.item_count) {
+    err = NIPC_ERR_BAD_ITEM_COUNT;
+    goto cleanup;
+  }
 
   *resp_len = nipc_apps_lookup_builder_finish(&builder);
-  return (*resp_len > 0) ? NIPC_OK : NIPC_ERR_OVERFLOW;
+  err = (*resp_len > 0) ? NIPC_OK : NIPC_ERR_OVERFLOW;
+
+cleanup:
+  free(payload_exceeded_lens);
+  return err;
 }

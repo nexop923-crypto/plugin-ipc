@@ -1037,6 +1037,13 @@ Tests or equivalent validation:
   - C Windows now validates the same no-progress `PAYLOAD_EXCEEDED` rejection for APPS_LOOKUP and CGROUPS_LOOKUP.
   - Go POSIX/Windows, Rust POSIX/Windows, and C POSIX/Windows validate logical response-byte ceilings for APPS_LOOKUP and CGROUPS_LOOKUP.
   - C POSIX also validates a final stitched response-buffer allocation fault; Go and Rust use explicit logical response-byte ceilings as the deterministic memory-pressure simulation available in those test harnesses.
+- Large response split/stitch suffix-reservation validation:
+  - Added C, Rust, and Go POSIX/Windows tests where one logical APPS_LOOKUP or CGROUPS_LOOKUP request receives large labeled known items that cannot fit in one response payload, requiring transparent `PAYLOAD_EXCEEDED` suffix retries and final response stitching.
+  - The first C POSIX fail-first run exposed a real builder gap: lookup builders could accept one more full known item and then have too little buffer left to encode `PAYLOAD_EXCEEDED` for the remaining suffix. The fix reserves space for the compact overflow suffix before committing another full item.
+  - C protocol/server dispatch now provides per-request compact suffix item lengths to APPS_LOOKUP and CGROUPS_LOOKUP builders; Go and Rust use the same reservation model in both protocol dispatch helpers and raw service dispatchers.
+  - Focused POSIX validation passed: `cmake --build build-coverage --target test_service -j12 && /usr/bin/ctest --test-dir build-coverage --output-on-failure -R '^test_service$'`; `cd src/go && go test -count=1 -timeout=300s ./pkg/netipc/service/raw -run '^TestLookupLargeResponseSplit$'`; `cargo test --manifest-path src/crates/netipc/Cargo.toml large_response_split -- --nocapture`.
+  - Focused Windows validation passed on `win11`: `NIPC_TEST_FILTER=large_response_split timeout 600 build-windows-focused/bin/test_win_service_extra.exe`; `cd src/go && "/c/Program Files/Go/bin/go.exe" test -count=1 -timeout=300s ./pkg/netipc/service/raw -run "^TestWinLookupLargeResponseSplit$"`; `/c/Users/costa/.cargo/bin/cargo.exe test --manifest-path src/crates/netipc/Cargo.toml large_response_split -- --nocapture`.
+  - Protocol-level validation also passed: C `test_protocol`, Go `./pkg/netipc/protocol`, and Rust `protocol::lookup` tests.
 - Note: `ctest` on `$PATH` resolved to a broken local Python wrapper missing the `cmake` module; validation used `/usr/bin/ctest`.
 
 Real-use evidence:

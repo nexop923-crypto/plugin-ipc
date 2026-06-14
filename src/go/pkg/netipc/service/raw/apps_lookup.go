@@ -216,6 +216,13 @@ func AppsLookupDispatch(handle AppsLookupHandler) DispatchHandler {
 			return 0, protocol.ErrOverflow
 		}
 		builder := protocol.NewAppsLookupBuilder(responseBuf, req.ItemCount, 0)
+		if req.ItemCount > 0 {
+			lens := make([]int, req.ItemCount)
+			for i := range lens {
+				lens[i] = protocol.AppsLookupItemHdr + 3
+			}
+			builder.SetPayloadExceededItemLens(lens)
+		}
 		if !handle(req, builder) {
 			return 0, errHandlerFailed
 		}

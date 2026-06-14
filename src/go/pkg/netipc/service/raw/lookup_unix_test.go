@@ -756,6 +756,93 @@ func runUnixLargeCgroupsLookup(t *testing.T, service string, itemCount int) {
 	}
 }
 
+func TestLookupLargeResponseSplit(t *testing.T) {
+	t.Run("apps", func(t *testing.T) {
+		runUnixLargeAppsResponseSplit(t, "go_svc_apps_lookup_large_response_split")
+	})
+	t.Run("cgroups", func(t *testing.T) {
+		runUnixLargeCgroupsResponseSplit(t, "go_svc_cgroups_lookup_large_response_split")
+	})
+}
+
+func runUnixLargeAppsResponseSplit(t *testing.T, service string) {
+	t.Helper()
+
+	pids := largeLookupPids(lookupResponseSplitScaleItems)
+	cfg := testServerConfig()
+	cfg.MaxRequestPayloadBytes = lookupResponseSplitRequestPayloadBytes
+	cfg.MaxResponsePayloadBytes = lookupResponseSplitPayloadBytes
+	var calls atomic.Uint32
+	var maxSeen atomic.Uint32
+	ts := startLookupTestServerWithConfig(
+		service,
+		protocol.MethodAppsLookup,
+		AppsLookupDispatch(responseSplitAppsLookupHandler(&calls, &maxSeen)),
+		cfg,
+		8,
+	)
+	defer ts.stop()
+
+	ccfg := testClientConfig()
+	ccfg.MaxRequestPayloadBytes = lookupResponseSplitRequestPayloadBytes
+	ccfg.MaxResponsePayloadBytes = lookupResponseSplitPayloadBytes
+	client := NewAppsLookupClient(testRunDir, service, ccfg)
+	defer client.Close()
+	client.SetCallTimeout(lookupScaleCallTimeoutMs)
+	refreshUnixClientReady(t, client)
+
+	view, err := client.CallAppsLookup(pids)
+	if err != nil {
+		t.Fatalf("apps response-split lookup failed: %v", err)
+	}
+	verifyResponseSplitAppsLookupResponse(t, view, pids)
+	if calls.Load() <= lookupResponseSplitMinCalls {
+		t.Fatalf("handler calls = %d, want response-split retries", calls.Load())
+	}
+	if maxSeen.Load() != lookupResponseSplitScaleItems {
+		t.Fatalf("max request items = %d, want one full %d-item request", maxSeen.Load(), lookupResponseSplitScaleItems)
+	}
+}
+
+func runUnixLargeCgroupsResponseSplit(t *testing.T, service string) {
+	t.Helper()
+
+	paths := largeLookupPaths(lookupResponseSplitScaleItems)
+	cfg := testServerConfig()
+	cfg.MaxRequestPayloadBytes = lookupResponseSplitRequestPayloadBytes
+	cfg.MaxResponsePayloadBytes = lookupResponseSplitPayloadBytes
+	var calls atomic.Uint32
+	var maxSeen atomic.Uint32
+	ts := startLookupTestServerWithConfig(
+		service,
+		protocol.MethodCgroupsLookup,
+		CgroupsLookupDispatch(responseSplitCgroupsLookupHandler(&calls, &maxSeen)),
+		cfg,
+		8,
+	)
+	defer ts.stop()
+
+	ccfg := testClientConfig()
+	ccfg.MaxRequestPayloadBytes = lookupResponseSplitRequestPayloadBytes
+	ccfg.MaxResponsePayloadBytes = lookupResponseSplitPayloadBytes
+	client := NewCgroupsLookupClient(testRunDir, service, ccfg)
+	defer client.Close()
+	client.SetCallTimeout(lookupScaleCallTimeoutMs)
+	refreshUnixClientReady(t, client)
+
+	view, err := client.CallCgroupsLookup(paths)
+	if err != nil {
+		t.Fatalf("cgroups response-split lookup failed: %v", err)
+	}
+	verifyResponseSplitCgroupsLookupResponse(t, view, paths)
+	if calls.Load() <= lookupResponseSplitMinCalls {
+		t.Fatalf("handler calls = %d, want response-split retries", calls.Load())
+	}
+	if maxSeen.Load() != lookupResponseSplitScaleItems {
+		t.Fatalf("max request items = %d, want one full %d-item request", maxSeen.Load(), lookupResponseSplitScaleItems)
+	}
+}
+
 func TestLookupLogicalLimits(t *testing.T) {
 	t.Run("apps item limit", func(t *testing.T) {
 		client := NewAppsLookupClient(testRunDir, "unused", testClientConfig())

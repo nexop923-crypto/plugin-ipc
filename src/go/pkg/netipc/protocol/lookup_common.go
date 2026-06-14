@@ -134,6 +134,32 @@ func checkedAlign8(v int) (int, bool) {
 	return Align8(v), true
 }
 
+func payloadExceededSuffixFits(bufLen, dataOffset int, itemLens []int, first, maxItems uint32) bool {
+	maxItemsInt, ok := checkedInt(uint64(maxItems))
+	if !ok || len(itemLens) != maxItemsInt {
+		return true
+	}
+	firstInt, ok := checkedInt(uint64(first))
+	if !ok {
+		return false
+	}
+	if firstInt > maxItemsInt {
+		return true
+	}
+	for i := firstInt; i < maxItemsInt; i++ {
+		itemStart, ok := checkedAlign8(dataOffset)
+		if !ok || itemStart > bufLen {
+			return false
+		}
+		itemEnd, ok := checkedAddInt(itemStart, itemLens[i])
+		if !ok || itemEnd > bufLen {
+			return false
+		}
+		dataOffset = itemEnd
+	}
+	return true
+}
+
 func validateLookupDir(buf []byte, dirStart int, itemCount uint32, packedAreaLen int, minLen int, exactLen int) error {
 	var minLen32 uint32
 	var exactLen32 uint32

@@ -441,6 +441,7 @@ type AppsLookupBuilder struct {
 	dataOffset            int
 	err                   error
 	payloadExceededSuffix bool
+	payloadExceededLens   []int
 }
 
 func NewAppsLookupBuilder(buf []byte, maxItems uint32, generation uint64) *AppsLookupBuilder {
@@ -456,6 +457,10 @@ func NewAppsLookupBuilder(buf []byte, maxItems uint32, generation uint64) *AppsL
 
 func (b *AppsLookupBuilder) SetGeneration(generation uint64) {
 	b.generation = generation
+}
+
+func (b *AppsLookupBuilder) SetPayloadExceededItemLens(itemLens []int) {
+	b.payloadExceededLens = itemLens
 }
 
 // Add appends one APPS_LOOKUP wire item; parameters mirror the fixed protocol fields.
@@ -536,6 +541,9 @@ func (b *AppsLookupBuilder) Add(status, cgroupStatus, orchestrator uint16, pid, 
 	}
 	itemEnd, ok := checkedAddInt(itemStart, itemSize)
 	if !ok || itemEnd > len(b.buf) {
+		return b.noteItemOverflow(pid)
+	}
+	if !payloadExceededSuffixFits(len(b.buf), itemEnd, b.payloadExceededLens, b.itemCount+1, b.maxItems) {
 		return b.noteItemOverflow(pid)
 	}
 	commOff32, ok := checkedU32Int(commOff)
@@ -699,6 +707,13 @@ func DispatchAppsLookup(req []byte, resp []byte, handler func(*AppsLookupRequest
 		return 0, ErrOverflow
 	}
 	builder := NewAppsLookupBuilder(resp, request.ItemCount, 0)
+	if request.ItemCount > 0 {
+		lens := make([]int, request.ItemCount)
+		for i := range lens {
+			lens[i] = appsLookupUnknownItemSize
+		}
+		builder.SetPayloadExceededItemLens(lens)
+	}
 	if !handler(request, builder) {
 		if builder.Error() != nil {
 			return 0, builder.Error()

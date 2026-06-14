@@ -353,6 +353,7 @@ type CgroupsLookupBuilder struct {
 	dataOffset            int
 	err                   error
 	payloadExceededSuffix bool
+	payloadExceededLens   []int
 }
 
 func NewCgroupsLookupBuilder(buf []byte, maxItems uint32, generation uint64) *CgroupsLookupBuilder {
@@ -368,6 +369,10 @@ func NewCgroupsLookupBuilder(buf []byte, maxItems uint32, generation uint64) *Cg
 
 func (b *CgroupsLookupBuilder) SetGeneration(generation uint64) {
 	b.generation = generation
+}
+
+func (b *CgroupsLookupBuilder) SetPayloadExceededItemLens(itemLens []int) {
+	b.payloadExceededLens = itemLens
 }
 
 func (b *CgroupsLookupBuilder) Add(status, orchestrator uint16, path, name []byte, labels []struct{ Key, Value []byte }) error {
@@ -428,6 +433,9 @@ func (b *CgroupsLookupBuilder) Add(status, orchestrator uint16, path, name []byt
 	}
 	itemEnd, ok := checkedAddInt(itemStart, itemSize)
 	if !ok || itemEnd > len(b.buf) {
+		return b.noteItemOverflow(path)
+	}
+	if !payloadExceededSuffixFits(len(b.buf), itemEnd, b.payloadExceededLens, b.itemCount+1, b.maxItems) {
 		return b.noteItemOverflow(path)
 	}
 	pathOff32, ok := checkedU32Int(pathOff)
@@ -604,6 +612,24 @@ func DispatchCgroupsLookup(req []byte, resp []byte, handler func(*CgroupsLookupR
 		return 0, ErrOverflow
 	}
 	builder := NewCgroupsLookupBuilder(resp, request.ItemCount, 0)
+	if request.ItemCount > 0 {
+		lens := make([]int, request.ItemCount)
+		for i := range lens {
+			item, err := request.Item(uint32(i)) // #nosec G115 -- i is bounded by ItemCount from the decoded uint32 header.
+			if err != nil {
+				return 0, err
+			}
+			size, ok := checkedAddInt(CgroupsLookupItemHdr, len(item.Bytes()))
+			if ok {
+				size, ok = checkedAddInt(size, 2)
+			}
+			if !ok {
+				return 0, ErrOverflow
+			}
+			lens[i] = size
+		}
+		builder.SetPayloadExceededItemLens(lens)
+	}
 	if !handler(request, builder) {
 		if builder.Error() != nil {
 			return 0, builder.Error()

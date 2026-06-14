@@ -41,6 +41,11 @@ static int g_fail = 0;
 #define LOOKUP_HPC_SCALE_ITEMS 32768u
 #define LOOKUP_SCALE_REQUEST_PAYLOAD_BYTES 8192u
 #define LOOKUP_SCALE_PATH_BYTES 24u
+#define LOOKUP_RESPONSE_SPLIT_ITEMS 512u
+#define LOOKUP_RESPONSE_SPLIT_REQUEST_PAYLOAD_BYTES 65536u
+#define LOOKUP_RESPONSE_SPLIT_RESPONSE_PAYLOAD_BYTES 98304u
+#define LOOKUP_RESPONSE_SPLIT_MIN_CALLS 2u
+#define LOOKUP_RESPONSE_SPLIT_LABEL_BYTES 512u
 
 static void check(const char *name, int cond)
 {
@@ -1326,6 +1331,82 @@ static bool apps_lookup_scale_handler(void *user,
                     "ok", 2, "/ok", 3, "name", 4, NULL, 0) != NIPC_OK)
                 return false;
         }
+    }
+
+    return true;
+}
+
+static int lookup_response_split_label_ok(const nipc_lookup_label_view_t *label)
+{
+    return label &&
+           service_str_eq(label->key, "scale") &&
+           label->value.len == LOOKUP_RESPONSE_SPLIT_LABEL_BYTES &&
+           label->value.ptr[0] == 'l' &&
+           label->value.ptr[LOOKUP_RESPONSE_SPLIT_LABEL_BYTES - 1] == 'l';
+}
+
+static bool cgroups_lookup_response_split_handler(
+        void *user,
+        const nipc_cgroups_lookup_req_view_t *request,
+        nipc_cgroups_lookup_builder_t *builder)
+{
+    lookup_scale_state_t *state = (lookup_scale_state_t *)user;
+    uint32_t call = __atomic_add_fetch(&state->calls, 1, __ATOMIC_ACQ_REL);
+    char label_value[LOOKUP_RESPONSE_SPLIT_LABEL_BYTES];
+
+    lookup_scale_note_items(state, request->item_count);
+    lookup_scale_after_call(state, call);
+    memset(label_value, 'l', sizeof(label_value));
+    nipc_cgroups_lookup_builder_set_generation(builder, 7u);
+
+    for (uint32_t i = 0; i < request->item_count; i++) {
+        nipc_cgroups_lookup_req_item_t req_item;
+        if (nipc_cgroups_lookup_req_item(request, i, &req_item) != NIPC_OK)
+            return false;
+
+        nipc_lookup_label_view_t labels[] = {
+            { .key = { .ptr = "scale", .len = 5 },
+              .value = { .ptr = label_value, .len = sizeof(label_value) } },
+        };
+        nipc_error_t err = nipc_cgroups_lookup_builder_add(
+            builder, NIPC_CGROUP_LOOKUP_KNOWN, NIPC_ORCHESTRATOR_K8S,
+            req_item.path.ptr, req_item.path.len, "ok", 2, labels, 1);
+        if (err != NIPC_OK)
+            return false;
+    }
+
+    return true;
+}
+
+static bool apps_lookup_response_split_handler(
+        void *user,
+        const nipc_apps_lookup_req_view_t *request,
+        nipc_apps_lookup_builder_t *builder)
+{
+    lookup_scale_state_t *state = (lookup_scale_state_t *)user;
+    uint32_t call = __atomic_add_fetch(&state->calls, 1, __ATOMIC_ACQ_REL);
+    char label_value[LOOKUP_RESPONSE_SPLIT_LABEL_BYTES];
+
+    lookup_scale_note_items(state, request->item_count);
+    lookup_scale_after_call(state, call);
+    memset(label_value, 'l', sizeof(label_value));
+    nipc_apps_lookup_builder_set_generation(builder, 9u);
+
+    for (uint32_t i = 0; i < request->item_count; i++) {
+        nipc_apps_lookup_req_item_t req_item;
+        if (nipc_apps_lookup_req_item(request, i, &req_item) != NIPC_OK)
+            return false;
+
+        nipc_lookup_label_view_t labels[] = {
+            { .key = { .ptr = "scale", .len = 5 },
+              .value = { .ptr = label_value, .len = sizeof(label_value) } },
+        };
+        nipc_error_t err = nipc_apps_lookup_builder_add(
+            builder, NIPC_PID_LOOKUP_KNOWN, NIPC_APPS_CGROUP_KNOWN,
+            NIPC_ORCHESTRATOR_DOCKER, req_item.pid, 1, 1000, 42, "ok", 2,
+            "/ok", 3, "name", 4, labels, 1);
+        if (err != NIPC_OK)
+            return false;
     }
 
     return true;
@@ -2712,6 +2793,187 @@ static void test_lookup_large_logical_calls(void)
                                            LOOKUP_TOPOLOGY_SCALE_ITEMS);
     test_cgroups_lookup_large_logical_case("svc_cgroups_lookup_large_32768",
                                            LOOKUP_HPC_SCALE_ITEMS);
+}
+
+static void test_apps_lookup_large_response_split_case(const char *svc)
+{
+    cleanup_all(svc);
+
+    uint32_t *pids = calloc(LOOKUP_RESPONSE_SPLIT_ITEMS, sizeof(*pids));
+    check("apps response-split allocate pids", pids != NULL);
+    if (!pids)
+        return;
+
+    for (uint32_t i = 0; i < LOOKUP_RESPONSE_SPLIT_ITEMS; i++)
+        pids[i] = 200000u + i;
+
+    lookup_scale_state_t state;
+    memset(&state, 0, sizeof(state));
+    lookup_server_thread_ctx_t sctx;
+    memset(&sctx, 0, sizeof(sctx));
+    sctx.config = default_service_server_config();
+    sctx.config.max_request_payload_bytes =
+        LOOKUP_RESPONSE_SPLIT_REQUEST_PAYLOAD_BYTES;
+    sctx.config.max_response_payload_bytes =
+        LOOKUP_RESPONSE_SPLIT_RESPONSE_PAYLOAD_BYTES;
+    sctx.has_config = 1;
+    sctx.apps_handler.handle = apps_lookup_response_split_handler;
+    sctx.apps_handler.user = &state;
+
+    pthread_t tid;
+    start_lookup_server(&sctx, svc, LOOKUP_SERVER_APPS, &tid);
+    check("apps response-split server started",
+          __atomic_load_n(&sctx.ready, __ATOMIC_ACQUIRE) == 1);
+
+    nipc_client_ctx_t client;
+    nipc_client_config_t ccfg = default_client_config();
+    ccfg.max_request_payload_bytes =
+        LOOKUP_RESPONSE_SPLIT_REQUEST_PAYLOAD_BYTES;
+    ccfg.max_response_payload_bytes =
+        LOOKUP_RESPONSE_SPLIT_RESPONSE_PAYLOAD_BYTES;
+    nipc_client_init(&client, TEST_RUN_DIR, svc, &ccfg);
+    nipc_client_refresh(&client);
+    check("apps response-split client ready", nipc_client_ready(&client));
+
+    nipc_apps_lookup_resp_view_t view;
+    nipc_error_t err =
+        nipc_client_call_apps_lookup(&client, pids,
+                                     LOOKUP_RESPONSE_SPLIT_ITEMS, &view);
+    char call_msg[160];
+    snprintf(call_msg, sizeof(call_msg),
+             "apps response-split call ok err=%d calls=%u max=%u", err,
+             __atomic_load_n(&state.calls, __ATOMIC_ACQUIRE),
+             __atomic_load_n(&state.max_items_seen, __ATOMIC_ACQUIRE));
+    check(call_msg, err == NIPC_OK);
+
+    if (err == NIPC_OK) {
+        int ordered = view.item_count == LOOKUP_RESPONSE_SPLIT_ITEMS &&
+                      view.generation == 9u;
+        for (uint32_t i = 0; ordered && i < LOOKUP_RESPONSE_SPLIT_ITEMS; i++) {
+            nipc_apps_lookup_item_view_t item;
+            nipc_lookup_label_view_t label;
+            if (nipc_apps_lookup_resp_item(&view, i, &item) != NIPC_OK ||
+                item.status != NIPC_PID_LOOKUP_KNOWN ||
+                item.pid != pids[i] ||
+                item.label_count != 1 ||
+                nipc_apps_lookup_item_label(&item, 0, &label) != NIPC_OK ||
+                !lookup_response_split_label_ok(&label))
+                ordered = 0;
+        }
+        check("apps response-split stitched labeled response", ordered);
+        check("apps response-split used many response retries",
+              __atomic_load_n(&state.calls, __ATOMIC_ACQUIRE) >
+                  LOOKUP_RESPONSE_SPLIT_MIN_CALLS);
+        check("apps response-split first request held all items",
+              __atomic_load_n(&state.max_items_seen, __ATOMIC_ACQUIRE) ==
+                  LOOKUP_RESPONSE_SPLIT_ITEMS);
+    }
+
+    nipc_client_close(&client);
+    stop_lookup_server(&sctx, tid);
+    cleanup_all(svc);
+    free(pids);
+}
+
+static void test_cgroups_lookup_large_response_split_case(const char *svc)
+{
+    cleanup_all(svc);
+
+    nipc_str_view_t *paths =
+        calloc(LOOKUP_RESPONSE_SPLIT_ITEMS, sizeof(*paths));
+    char *path_storage =
+        calloc(LOOKUP_RESPONSE_SPLIT_ITEMS, LOOKUP_SCALE_PATH_BYTES);
+    check("cgroups response-split allocate paths",
+          paths != NULL && path_storage != NULL);
+    if (!paths || !path_storage) {
+        free(paths);
+        free(path_storage);
+        return;
+    }
+
+    for (uint32_t i = 0; i < LOOKUP_RESPONSE_SPLIT_ITEMS; i++) {
+        char *slot = path_storage + ((size_t)i * LOOKUP_SCALE_PATH_BYTES);
+        snprintf(slot, LOOKUP_SCALE_PATH_BYTES, "/cg/%05u", i);
+        paths[i].ptr = slot;
+        paths[i].len = strlen(slot);
+    }
+
+    lookup_scale_state_t state;
+    memset(&state, 0, sizeof(state));
+    lookup_server_thread_ctx_t sctx;
+    memset(&sctx, 0, sizeof(sctx));
+    sctx.config = default_service_server_config();
+    sctx.config.max_request_payload_bytes =
+        LOOKUP_RESPONSE_SPLIT_REQUEST_PAYLOAD_BYTES;
+    sctx.config.max_response_payload_bytes =
+        LOOKUP_RESPONSE_SPLIT_RESPONSE_PAYLOAD_BYTES;
+    sctx.has_config = 1;
+    sctx.cgroups_handler.handle = cgroups_lookup_response_split_handler;
+    sctx.cgroups_handler.user = &state;
+
+    pthread_t tid;
+    start_lookup_server(&sctx, svc, LOOKUP_SERVER_CGROUPS, &tid);
+    check("cgroups response-split server started",
+          __atomic_load_n(&sctx.ready, __ATOMIC_ACQUIRE) == 1);
+
+    nipc_client_ctx_t client;
+    nipc_client_config_t ccfg = default_client_config();
+    ccfg.max_request_payload_bytes =
+        LOOKUP_RESPONSE_SPLIT_REQUEST_PAYLOAD_BYTES;
+    ccfg.max_response_payload_bytes =
+        LOOKUP_RESPONSE_SPLIT_RESPONSE_PAYLOAD_BYTES;
+    nipc_client_init(&client, TEST_RUN_DIR, svc, &ccfg);
+    nipc_client_refresh(&client);
+    check("cgroups response-split client ready", nipc_client_ready(&client));
+
+    nipc_cgroups_lookup_resp_view_t view;
+    nipc_error_t err = nipc_client_call_cgroups_lookup(
+        &client, paths, LOOKUP_RESPONSE_SPLIT_ITEMS, &view);
+    char call_msg[160];
+    snprintf(call_msg, sizeof(call_msg),
+             "cgroups response-split call ok err=%d calls=%u max=%u", err,
+             __atomic_load_n(&state.calls, __ATOMIC_ACQUIRE),
+             __atomic_load_n(&state.max_items_seen, __ATOMIC_ACQUIRE));
+    check(call_msg, err == NIPC_OK);
+
+    if (err == NIPC_OK) {
+        int ordered = view.item_count == LOOKUP_RESPONSE_SPLIT_ITEMS &&
+                      view.generation == 7u;
+        for (uint32_t i = 0; ordered && i < LOOKUP_RESPONSE_SPLIT_ITEMS; i++) {
+            nipc_cgroups_lookup_item_view_t item;
+            nipc_lookup_label_view_t label;
+            if (nipc_cgroups_lookup_resp_item(&view, i, &item) != NIPC_OK ||
+                item.status != NIPC_CGROUP_LOOKUP_KNOWN ||
+                !service_str_eq(item.path, paths[i].ptr) ||
+                item.label_count != 1 ||
+                nipc_cgroups_lookup_item_label(&item, 0, &label) != NIPC_OK ||
+                !lookup_response_split_label_ok(&label))
+                ordered = 0;
+        }
+        check("cgroups response-split stitched labeled response", ordered);
+        check("cgroups response-split used many response retries",
+              __atomic_load_n(&state.calls, __ATOMIC_ACQUIRE) >
+                  LOOKUP_RESPONSE_SPLIT_MIN_CALLS);
+        check("cgroups response-split first request held all items",
+              __atomic_load_n(&state.max_items_seen, __ATOMIC_ACQUIRE) ==
+                  LOOKUP_RESPONSE_SPLIT_ITEMS);
+    }
+
+    nipc_client_close(&client);
+    stop_lookup_server(&sctx, tid);
+    cleanup_all(svc);
+    free(path_storage);
+    free(paths);
+}
+
+static void test_lookup_large_response_split_calls(void)
+{
+    printf("Test 3e3: Lookup large response split/stitch calls\n");
+
+    test_apps_lookup_large_response_split_case(
+        "svc_apps_lookup_large_response_split");
+    test_cgroups_lookup_large_response_split_case(
+        "svc_cgroups_lookup_large_response_split");
 }
 
 static void test_cgroups_lookup_oversized_request_key(void)
@@ -6978,6 +7240,7 @@ int main(void)
     test_apps_lookup_payload_exceeded_retry(); printf("\n");
     test_lookup_proactive_request_split(); printf("\n");
     test_lookup_large_logical_calls(); printf("\n");
+    test_lookup_large_response_split_calls(); printf("\n");
     test_cgroups_lookup_oversized_request_key(); printf("\n");
     test_lookup_logical_limits(); printf("\n");
     test_cgroups_lookup_rejects_mixed_generation_retry(); printf("\n");

@@ -3,8 +3,9 @@ use super::common::lookup_raw_response_size;
 use super::dispatch::{DispatchError, DispatchHandler};
 use crate::protocol::{
     self, AppsLookupBuilder, AppsLookupRequestView, AppsLookupResponseView, NipcError,
-    APPS_LOOKUP_KEY_SIZE, APPS_LOOKUP_REQ_HDR_SIZE, APPS_LOOKUP_RESP_HDR_SIZE,
-    LOOKUP_DIR_ENTRY_SIZE, METHOD_APPS_LOOKUP, PID_LOOKUP_PAYLOAD_EXCEEDED,
+    APPS_LOOKUP_ITEM_HDR_SIZE, APPS_LOOKUP_KEY_SIZE, APPS_LOOKUP_REQ_HDR_SIZE,
+    APPS_LOOKUP_RESP_HDR_SIZE, LOOKUP_DIR_ENTRY_SIZE, METHOD_APPS_LOOKUP,
+    PID_LOOKUP_PAYLOAD_EXCEEDED,
 };
 use std::sync::Arc;
 
@@ -193,6 +194,12 @@ pub fn apps_lookup_dispatch(handler: AppsLookupHandler) -> DispatchHandler {
             return Err(DispatchError::Overflow);
         }
         let mut builder = AppsLookupBuilder::new(response_buf, request.item_count, 0);
+        if request.item_count > 0 {
+            builder.set_payload_exceeded_item_lens(vec![
+                APPS_LOOKUP_ITEM_HDR_SIZE + 3;
+                request.item_count as usize
+            ]);
+        }
         if !handler(&request, &mut builder) {
             return Err(DispatchError::HandlerFailed);
         }

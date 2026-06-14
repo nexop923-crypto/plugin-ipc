@@ -245,6 +245,18 @@ pub fn cgroups_lookup_dispatch(handler: CgroupsLookupHandler) -> DispatchHandler
             return Err(DispatchError::Overflow);
         }
         let mut builder = CgroupsLookupBuilder::new(response_buf, request.item_count, 0);
+        if request.item_count > 0 {
+            let mut payload_exceeded_item_lens = Vec::with_capacity(request.item_count as usize);
+            for i in 0..request.item_count {
+                let item = request.item(i).map_err(|_| DispatchError::BadEnvelope)?;
+                let item_len = CGROUPS_LOOKUP_ITEM_HDR_SIZE
+                    .checked_add(item.as_bytes().len())
+                    .and_then(|v| v.checked_add(2))
+                    .ok_or(DispatchError::Overflow)?;
+                payload_exceeded_item_lens.push(item_len);
+            }
+            builder.set_payload_exceeded_item_lens(payload_exceeded_item_lens);
+        }
         if !handler(&request, &mut builder) {
             return Err(DispatchError::HandlerFailed);
         }

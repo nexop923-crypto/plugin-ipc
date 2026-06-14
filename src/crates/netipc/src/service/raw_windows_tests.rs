@@ -27,6 +27,11 @@ const LOOKUP_TOPOLOGY_SCALE_ITEMS: usize = 8192;
 const LOOKUP_HPC_SCALE_ITEMS: usize = 32768;
 const LOOKUP_SCALE_REQUEST_PAYLOAD_BYTES: u32 = 8192;
 const LOOKUP_SCALE_CALL_TIMEOUT_MS: u32 = 120_000;
+const LOOKUP_RESPONSE_SPLIT_SCALE_ITEMS: usize = 512;
+const LOOKUP_RESPONSE_SPLIT_REQUEST_PAYLOAD_BYTES: u32 = 65_536;
+const LOOKUP_RESPONSE_SPLIT_PAYLOAD_BYTES: u32 = 98_304;
+const LOOKUP_RESPONSE_SPLIT_MIN_CALLS: u32 = 2;
+const LOOKUP_RESPONSE_SPLIT_LABEL_BYTES: usize = 512;
 static WIN_SERVICE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn ensure_run_dir() {
@@ -1711,6 +1716,39 @@ fn verify_large_cgroups_lookup(view: &CgroupsLookupResponseView<'_>, paths: &[Ve
     }
 }
 
+fn verify_response_split_apps_lookup(view: &AppsLookupResponseView<'_>, pids: &[u32]) {
+    let label_value = vec![b'l'; LOOKUP_RESPONSE_SPLIT_LABEL_BYTES];
+    assert_eq!(view.item_count, pids.len() as u32);
+    assert_eq!(view.generation, 9);
+    for (i, expected) in pids.iter().enumerate() {
+        let item = view.item(i as u32).expect("apps response-split item");
+        assert_eq!(item.status, PID_LOOKUP_KNOWN);
+        assert_eq!(item.pid, *expected);
+        assert_eq!(item.comm.as_bytes(), b"ok");
+        assert_eq!(item.cgroup_path.as_bytes(), b"/ok");
+        assert_eq!(item.label_count, 1);
+        let label = item.label(0).expect("apps response-split label");
+        assert_eq!(label.key.as_bytes(), b"scale");
+        assert_eq!(label.value.as_bytes(), label_value.as_slice());
+    }
+}
+
+fn verify_response_split_cgroups_lookup(view: &CgroupsLookupResponseView<'_>, paths: &[Vec<u8>]) {
+    let label_value = vec![b'l'; LOOKUP_RESPONSE_SPLIT_LABEL_BYTES];
+    assert_eq!(view.item_count, paths.len() as u32);
+    assert_eq!(view.generation, 7);
+    for (i, expected) in paths.iter().enumerate() {
+        let item = view.item(i as u32).expect("cgroups response-split item");
+        assert_eq!(item.status, CGROUP_LOOKUP_KNOWN);
+        assert_eq!(item.path.as_bytes(), expected.as_slice());
+        assert_eq!(item.name.as_bytes(), b"ok");
+        assert_eq!(item.label_count, 1);
+        let label = item.label(0).expect("cgroups response-split label");
+        assert_eq!(label.key.as_bytes(), b"scale");
+        assert_eq!(label.value.as_bytes(), label_value.as_slice());
+    }
+}
+
 fn patch_lookup_item_u16(
     payload: &mut [u8],
     hdr_size: usize,
@@ -2080,6 +2118,143 @@ fn test_lookup_large_logical_calls_windows() {
         LOOKUP_TOPOLOGY_SCALE_ITEMS,
     );
     run_large_cgroups_lookup_windows("rs_win_cgroups_lookup_large_32768", LOOKUP_HPC_SCALE_ITEMS);
+}
+
+fn run_large_apps_response_split_windows(prefix: &str) {
+    let svc = unique_service(prefix);
+    let pids = large_lookup_pids(LOOKUP_RESPONSE_SPLIT_SCALE_ITEMS);
+    let mut cfg = server_config();
+    cfg.max_request_payload_bytes = LOOKUP_RESPONSE_SPLIT_REQUEST_PAYLOAD_BYTES;
+    cfg.max_response_payload_bytes = LOOKUP_RESPONSE_SPLIT_PAYLOAD_BYTES;
+    let mut wake_cfg = client_config();
+    wake_cfg.max_request_payload_bytes = LOOKUP_RESPONSE_SPLIT_REQUEST_PAYLOAD_BYTES;
+    wake_cfg.max_response_payload_bytes = LOOKUP_RESPONSE_SPLIT_PAYLOAD_BYTES;
+    let calls = Arc::new(AtomicU32::new(0));
+    let max_seen = Arc::new(AtomicU32::new(0));
+    let handler_calls = calls.clone();
+    let handler_max = max_seen.clone();
+    let label_value = vec![b'l'; LOOKUP_RESPONSE_SPLIT_LABEL_BYTES];
+    let handler = apps_lookup_dispatch(Arc::new(move |req, builder| {
+        handler_calls.fetch_add(1, Ordering::SeqCst);
+        handler_max.fetch_max(req.item_count, Ordering::SeqCst);
+        builder.set_generation(9);
+        for i in 0..req.item_count {
+            let pid = match req.item(i) {
+                Ok(pid) => pid,
+                Err(_) => return false,
+            };
+            let labels = [(b"scale".as_slice(), label_value.as_slice())];
+            if builder
+                .add(
+                    PID_LOOKUP_KNOWN,
+                    APPS_CGROUP_KNOWN,
+                    ORCHESTRATOR_DOCKER,
+                    pid,
+                    1,
+                    1000,
+                    42,
+                    b"ok",
+                    b"/ok",
+                    b"name",
+                    &labels,
+                )
+                .is_err()
+            {
+                return false;
+            }
+        }
+        true
+    }));
+
+    let mut server = TestServer::start_with(&svc, cfg, wake_cfg, METHOD_APPS_LOOKUP, handler, 8);
+    let mut ccfg = client_config();
+    ccfg.max_request_payload_bytes = LOOKUP_RESPONSE_SPLIT_REQUEST_PAYLOAD_BYTES;
+    ccfg.max_response_payload_bytes = LOOKUP_RESPONSE_SPLIT_PAYLOAD_BYTES;
+    let mut client = apps_lookup_client(&svc, ccfg);
+    client.set_call_timeout(LOOKUP_SCALE_CALL_TIMEOUT_MS);
+    connect_ready(&mut client);
+
+    let view = client
+        .call_apps_lookup(&pids)
+        .expect("apps response-split lookup");
+    verify_response_split_apps_lookup(&view, &pids);
+    assert!(calls.load(Ordering::SeqCst) > LOOKUP_RESPONSE_SPLIT_MIN_CALLS);
+    assert_eq!(
+        max_seen.load(Ordering::SeqCst),
+        LOOKUP_RESPONSE_SPLIT_SCALE_ITEMS as u32
+    );
+
+    client.close();
+    server.stop();
+}
+
+fn run_large_cgroups_response_split_windows(prefix: &str) {
+    let svc = unique_service(prefix);
+    let paths = large_lookup_paths(LOOKUP_RESPONSE_SPLIT_SCALE_ITEMS);
+    let path_refs: Vec<&[u8]> = paths.iter().map(Vec::as_slice).collect();
+    let mut cfg = server_config();
+    cfg.max_request_payload_bytes = LOOKUP_RESPONSE_SPLIT_REQUEST_PAYLOAD_BYTES;
+    cfg.max_response_payload_bytes = LOOKUP_RESPONSE_SPLIT_PAYLOAD_BYTES;
+    let mut wake_cfg = client_config();
+    wake_cfg.max_request_payload_bytes = LOOKUP_RESPONSE_SPLIT_REQUEST_PAYLOAD_BYTES;
+    wake_cfg.max_response_payload_bytes = LOOKUP_RESPONSE_SPLIT_PAYLOAD_BYTES;
+    let calls = Arc::new(AtomicU32::new(0));
+    let max_seen = Arc::new(AtomicU32::new(0));
+    let handler_calls = calls.clone();
+    let handler_max = max_seen.clone();
+    let label_value = vec![b'l'; LOOKUP_RESPONSE_SPLIT_LABEL_BYTES];
+    let handler = cgroups_lookup_dispatch(Arc::new(move |req, builder| {
+        handler_calls.fetch_add(1, Ordering::SeqCst);
+        handler_max.fetch_max(req.item_count, Ordering::SeqCst);
+        builder.set_generation(7);
+        for i in 0..req.item_count {
+            let path = match req.item(i) {
+                Ok(path) => path,
+                Err(_) => return false,
+            };
+            let labels = [(b"scale".as_slice(), label_value.as_slice())];
+            if builder
+                .add(
+                    CGROUP_LOOKUP_KNOWN,
+                    ORCHESTRATOR_K8S,
+                    path.as_bytes(),
+                    b"ok",
+                    &labels,
+                )
+                .is_err()
+            {
+                return false;
+            }
+        }
+        true
+    }));
+
+    let mut server = TestServer::start_with(&svc, cfg, wake_cfg, METHOD_CGROUPS_LOOKUP, handler, 8);
+    let mut ccfg = client_config();
+    ccfg.max_request_payload_bytes = LOOKUP_RESPONSE_SPLIT_REQUEST_PAYLOAD_BYTES;
+    ccfg.max_response_payload_bytes = LOOKUP_RESPONSE_SPLIT_PAYLOAD_BYTES;
+    let mut client = cgroups_lookup_client(&svc, ccfg);
+    client.set_call_timeout(LOOKUP_SCALE_CALL_TIMEOUT_MS);
+    connect_ready(&mut client);
+
+    let view = client
+        .call_cgroups_lookup(&path_refs)
+        .expect("cgroups response-split lookup");
+    verify_response_split_cgroups_lookup(&view, &paths);
+    assert!(calls.load(Ordering::SeqCst) > LOOKUP_RESPONSE_SPLIT_MIN_CALLS);
+    assert_eq!(
+        max_seen.load(Ordering::SeqCst),
+        LOOKUP_RESPONSE_SPLIT_SCALE_ITEMS as u32
+    );
+
+    client.close();
+    server.stop();
+}
+
+#[test]
+fn test_lookup_large_response_split_calls_windows() {
+    run_large_apps_response_split_windows("rs_win_apps_lookup_large_response_split");
+    run_large_cgroups_response_split_windows("rs_win_cgroups_lookup_large_response_split");
 }
 
 #[test]

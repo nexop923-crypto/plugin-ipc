@@ -616,6 +616,91 @@ func runWinLargeCgroupsLookup(t *testing.T, service string, itemCount int) {
 	}
 }
 
+func TestWinLookupLargeResponseSplit(t *testing.T) {
+	t.Run("apps", func(t *testing.T) {
+		runWinLargeAppsResponseSplit(t, "go_win_apps_lookup_large_response_split")
+	})
+	t.Run("cgroups", func(t *testing.T) {
+		runWinLargeCgroupsResponseSplit(t, "go_win_cgroups_lookup_large_response_split")
+	})
+}
+
+func runWinLargeAppsResponseSplit(t *testing.T, service string) {
+	t.Helper()
+
+	pids := largeLookupPids(lookupResponseSplitScaleItems)
+	cfg := testWinServerConfig()
+	cfg.MaxRequestPayloadBytes = lookupResponseSplitRequestPayloadBytes
+	cfg.MaxResponsePayloadBytes = lookupResponseSplitPayloadBytes
+	var calls atomic.Uint32
+	var maxSeen atomic.Uint32
+	ts := startTestServerWinWithConfig(
+		service,
+		cfg,
+		protocol.MethodAppsLookup,
+		AppsLookupDispatch(responseSplitAppsLookupHandler(&calls, &maxSeen)),
+	)
+	defer ts.stop()
+
+	ccfg := testWinClientConfig()
+	ccfg.MaxRequestPayloadBytes = lookupResponseSplitRequestPayloadBytes
+	ccfg.MaxResponsePayloadBytes = lookupResponseSplitPayloadBytes
+	client := NewAppsLookupClient(winTestRunDir, service, ccfg)
+	defer client.Close()
+	client.SetCallTimeout(lookupScaleCallTimeoutMs)
+	waitWinClientReady(t, client)
+
+	view, err := client.CallAppsLookup(pids)
+	if err != nil {
+		t.Fatalf("apps response-split lookup failed: %v", err)
+	}
+	verifyResponseSplitAppsLookupResponse(t, view, pids)
+	if calls.Load() <= lookupResponseSplitMinCalls {
+		t.Fatalf("handler calls = %d, want response-split retries", calls.Load())
+	}
+	if maxSeen.Load() != lookupResponseSplitScaleItems {
+		t.Fatalf("max request items = %d, want one full %d-item request", maxSeen.Load(), lookupResponseSplitScaleItems)
+	}
+}
+
+func runWinLargeCgroupsResponseSplit(t *testing.T, service string) {
+	t.Helper()
+
+	paths := largeLookupPaths(lookupResponseSplitScaleItems)
+	cfg := testWinServerConfig()
+	cfg.MaxRequestPayloadBytes = lookupResponseSplitRequestPayloadBytes
+	cfg.MaxResponsePayloadBytes = lookupResponseSplitPayloadBytes
+	var calls atomic.Uint32
+	var maxSeen atomic.Uint32
+	ts := startTestServerWinWithConfig(
+		service,
+		cfg,
+		protocol.MethodCgroupsLookup,
+		CgroupsLookupDispatch(responseSplitCgroupsLookupHandler(&calls, &maxSeen)),
+	)
+	defer ts.stop()
+
+	ccfg := testWinClientConfig()
+	ccfg.MaxRequestPayloadBytes = lookupResponseSplitRequestPayloadBytes
+	ccfg.MaxResponsePayloadBytes = lookupResponseSplitPayloadBytes
+	client := NewCgroupsLookupClient(winTestRunDir, service, ccfg)
+	defer client.Close()
+	client.SetCallTimeout(lookupScaleCallTimeoutMs)
+	waitWinClientReady(t, client)
+
+	view, err := client.CallCgroupsLookup(paths)
+	if err != nil {
+		t.Fatalf("cgroups response-split lookup failed: %v", err)
+	}
+	verifyResponseSplitCgroupsLookupResponse(t, view, paths)
+	if calls.Load() <= lookupResponseSplitMinCalls {
+		t.Fatalf("handler calls = %d, want response-split retries", calls.Load())
+	}
+	if maxSeen.Load() != lookupResponseSplitScaleItems {
+		t.Fatalf("max request items = %d, want one full %d-item request", maxSeen.Load(), lookupResponseSplitScaleItems)
+	}
+}
+
 func TestWinLookupRequestCapacityReconnectPaths(t *testing.T) {
 	t.Run("reconnect grows capacity", func(t *testing.T) {
 		svc := uniqueWinService("go_win_lookup_request_capacity")

@@ -324,6 +324,7 @@ pub struct CgroupsLookupBuilder<'a> {
     data_offset: usize,
     error: Option<NipcError>,
     payload_exceeded_suffix: bool,
+    payload_exceeded_item_lens: Vec<usize>,
 }
 
 impl<'a> CgroupsLookupBuilder<'a> {
@@ -344,11 +345,16 @@ impl<'a> CgroupsLookupBuilder<'a> {
             data_offset,
             error: None,
             payload_exceeded_suffix: false,
+            payload_exceeded_item_lens: Vec::new(),
         }
     }
 
     pub fn set_generation(&mut self, generation: u64) {
         self.generation = generation;
+    }
+
+    pub fn set_payload_exceeded_item_lens(&mut self, item_lens: Vec<usize>) {
+        self.payload_exceeded_item_lens = item_lens;
     }
 
     pub fn add(
@@ -423,6 +429,15 @@ impl<'a> CgroupsLookupBuilder<'a> {
             Some(v) if v <= self.buf.len() => v,
             _ => return self.note_item_overflow(path),
         };
+        if !payload_exceeded_suffix_fits(
+            self.buf.len(),
+            item_end,
+            &self.payload_exceeded_item_lens,
+            self.item_count + 1,
+            self.max_items,
+        ) {
+            return self.note_item_overflow(path);
+        }
         if item_start > self.data_offset {
             self.buf[self.data_offset..item_start].fill(0);
         }
@@ -603,6 +618,18 @@ where
         return Err(NipcError::Overflow);
     }
     let mut builder = CgroupsLookupBuilder::new(resp, request.item_count, 0);
+    if request.item_count > 0 {
+        let mut payload_exceeded_item_lens = Vec::with_capacity(request.item_count as usize);
+        for i in 0..request.item_count {
+            let item = request.item(i)?;
+            let item_len = CGROUPS_LOOKUP_ITEM_HDR_SIZE
+                .checked_add(item.as_bytes().len())
+                .and_then(|v| v.checked_add(2))
+                .ok_or(NipcError::Overflow)?;
+            payload_exceeded_item_lens.push(item_len);
+        }
+        builder.set_payload_exceeded_item_lens(payload_exceeded_item_lens);
+    }
     if !handler(&request, &mut builder) {
         return Err(builder.error().unwrap_or(NipcError::BadLayout));
     }

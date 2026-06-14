@@ -518,6 +518,8 @@ typedef struct {
   nipc_error_t error;
   size_t data_offset;
   bool payload_exceeded_suffix;
+  const uint32_t *payload_exceeded_item_lens;
+  uint32_t payload_exceeded_item_lens_count;
 } nipc_cgroups_lookup_builder_t;
 
 typedef struct {
@@ -565,6 +567,8 @@ typedef struct {
   nipc_error_t error;
   size_t data_offset;
   bool payload_exceeded_suffix;
+  const uint32_t *payload_exceeded_item_lens;
+  uint32_t payload_exceeded_item_lens_count;
 } nipc_apps_lookup_builder_t;
 
 size_t nipc_cgroups_lookup_req_encode(const nipc_str_view_t *paths,
@@ -601,6 +605,9 @@ void nipc_cgroups_lookup_builder_init(nipc_cgroups_lookup_builder_t *b,
                                       uint32_t max_items, uint64_t generation);
 void nipc_cgroups_lookup_builder_set_generation(
     nipc_cgroups_lookup_builder_t *b, uint64_t generation);
+void nipc_cgroups_lookup_builder_set_payload_exceeded_item_lens(
+    nipc_cgroups_lookup_builder_t *b, const uint32_t *item_lens,
+    uint32_t item_count);
 uint32_t nipc_cgroups_lookup_builder_estimate_max_items(size_t buf_len);
 nipc_error_t nipc_cgroups_lookup_builder_add(
     nipc_cgroups_lookup_builder_t *b, uint16_t status, uint16_t orchestrator,
@@ -637,6 +644,9 @@ void nipc_apps_lookup_builder_init(nipc_apps_lookup_builder_t *b, void *buf,
                                    uint64_t generation);
 void nipc_apps_lookup_builder_set_generation(nipc_apps_lookup_builder_t *b,
                                              uint64_t generation);
+void nipc_apps_lookup_builder_set_payload_exceeded_item_lens(
+    nipc_apps_lookup_builder_t *b, const uint32_t *item_lens,
+    uint32_t item_count);
 uint32_t nipc_apps_lookup_builder_estimate_max_items(size_t buf_len);
 nipc_error_t nipc_apps_lookup_builder_add(
     nipc_apps_lookup_builder_t *b, uint16_t status, uint16_t cgroup_status,

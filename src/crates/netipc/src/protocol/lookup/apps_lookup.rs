@@ -450,6 +450,7 @@ pub struct AppsLookupBuilder<'a> {
     data_offset: usize,
     error: Option<NipcError>,
     payload_exceeded_suffix: bool,
+    payload_exceeded_item_lens: Vec<usize>,
 }
 
 impl<'a> AppsLookupBuilder<'a> {
@@ -470,11 +471,16 @@ impl<'a> AppsLookupBuilder<'a> {
             data_offset,
             error: None,
             payload_exceeded_suffix: false,
+            payload_exceeded_item_lens: Vec::new(),
         }
     }
 
     pub fn set_generation(&mut self, generation: u64) {
         self.generation = generation;
+    }
+
+    pub fn set_payload_exceeded_item_lens(&mut self, item_lens: Vec<usize>) {
+        self.payload_exceeded_item_lens = item_lens;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -570,6 +576,15 @@ impl<'a> AppsLookupBuilder<'a> {
             Some(v) if v <= self.buf.len() => v,
             _ => return self.note_item_overflow(pid),
         };
+        if !payload_exceeded_suffix_fits(
+            self.buf.len(),
+            item_end,
+            &self.payload_exceeded_item_lens,
+            self.item_count + 1,
+            self.max_items,
+        ) {
+            return self.note_item_overflow(pid);
+        }
         if item_start > self.data_offset {
             self.buf[self.data_offset..item_start].fill(0);
         }
@@ -764,6 +779,12 @@ where
         return Err(NipcError::Overflow);
     }
     let mut builder = AppsLookupBuilder::new(resp, request.item_count, 0);
+    if request.item_count > 0 {
+        builder.set_payload_exceeded_item_lens(vec![
+            APPS_LOOKUP_ITEM_HDR_SIZE + 3;
+            request.item_count as usize
+        ]);
+    }
     if !handler(&request, &mut builder) {
         return Err(builder.error().unwrap_or(NipcError::BadLayout));
     }

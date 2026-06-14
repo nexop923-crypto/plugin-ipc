@@ -280,6 +280,18 @@ func CgroupsLookupDispatch(handle CgroupsLookupHandler) DispatchHandler {
 			return 0, protocol.ErrOverflow
 		}
 		builder := protocol.NewCgroupsLookupBuilder(responseBuf, req.ItemCount, 0)
+		if req.ItemCount > 0 {
+			lens := make([]int, req.ItemCount)
+			for i := range lens {
+				item, err := req.Item(uint32(i)) // #nosec G115 -- i is bounded by req.ItemCount from the decoded uint32 header.
+				if err != nil {
+					return 0, err
+				}
+				size := protocol.CgroupsLookupItemHdr + len(item.Bytes()) + 2
+				lens[i] = size
+			}
+			builder.SetPayloadExceededItemLens(lens)
+		}
 		if !handle(req, builder) {
 			return 0, errHandlerFailed
 		}
