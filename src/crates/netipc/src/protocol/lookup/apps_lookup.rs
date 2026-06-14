@@ -786,7 +786,7 @@ where
         ]);
     }
     if !handler(&request, &mut builder) {
-        return Err(builder.error().unwrap_or(NipcError::BadLayout));
+        return Err(builder.error().unwrap_or(NipcError::HandlerFailed));
     }
     if let Some(err) = builder.error() {
         return Err(err);
@@ -1027,6 +1027,17 @@ mod tests {
             })
             .unwrap_err(),
             NipcError::Overflow
+        );
+    }
+
+    #[test]
+    fn apps_lookup_dispatch_reports_handler_failed() {
+        let mut req = [0u8; 64];
+        let n = encode_apps_lookup_request(&[1234], &mut req).unwrap();
+        let mut resp = vec![0u8; 256];
+        assert_eq!(
+            dispatch_apps_lookup(&req[..n], &mut resp, |_, _| false).unwrap_err(),
+            NipcError::HandlerFailed
         );
     }
 

@@ -634,7 +634,7 @@ func DispatchCgroupsLookup(req []byte, resp []byte, handler func(*CgroupsLookupR
 		if builder.Error() != nil {
 			return 0, builder.Error()
 		}
-		return 0, ErrBadLayout
+		return 0, ErrHandlerFailed
 	}
 	if builder.Error() != nil {
 		return 0, builder.Error()

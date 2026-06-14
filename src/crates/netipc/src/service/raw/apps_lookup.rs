@@ -1,11 +1,10 @@
 use super::client::{ClientConfig, RawCallKind, RawClient};
 use super::common::lookup_raw_response_size;
-use super::dispatch::{DispatchError, DispatchHandler};
+use super::dispatch::{dispatch_error_from_protocol, DispatchHandler};
 use crate::protocol::{
     self, AppsLookupBuilder, AppsLookupRequestView, AppsLookupResponseView, NipcError,
-    APPS_LOOKUP_ITEM_HDR_SIZE, APPS_LOOKUP_KEY_SIZE, APPS_LOOKUP_REQ_HDR_SIZE,
-    APPS_LOOKUP_RESP_HDR_SIZE, LOOKUP_DIR_ENTRY_SIZE, METHOD_APPS_LOOKUP,
-    PID_LOOKUP_PAYLOAD_EXCEEDED,
+    APPS_LOOKUP_KEY_SIZE, APPS_LOOKUP_REQ_HDR_SIZE, APPS_LOOKUP_RESP_HDR_SIZE,
+    LOOKUP_DIR_ENTRY_SIZE, METHOD_APPS_LOOKUP, PID_LOOKUP_PAYLOAD_EXCEEDED,
 };
 use std::sync::Arc;
 
@@ -182,39 +181,9 @@ impl RawClient {
 
 pub fn apps_lookup_dispatch(handler: AppsLookupHandler) -> DispatchHandler {
     Arc::new(move |request, response_buf| {
-        let request =
-            AppsLookupRequestView::decode(request).map_err(|_| DispatchError::BadEnvelope)?;
-        let dir_size = (request.item_count as usize)
-            .checked_mul(LOOKUP_DIR_ENTRY_SIZE)
-            .ok_or(DispatchError::Overflow)?;
-        let min_required = protocol::APPS_LOOKUP_RESP_HDR_SIZE
-            .checked_add(dir_size)
-            .ok_or(DispatchError::Overflow)?;
-        if response_buf.len() < min_required {
-            return Err(DispatchError::Overflow);
-        }
-        let mut builder = AppsLookupBuilder::new(response_buf, request.item_count, 0);
-        if request.item_count > 0 {
-            builder.set_payload_exceeded_item_lens(vec![
-                APPS_LOOKUP_ITEM_HDR_SIZE + 3;
-                request.item_count as usize
-            ]);
-        }
-        if !handler(&request, &mut builder) {
-            return Err(DispatchError::HandlerFailed);
-        }
-        if let Some(err) = builder.error() {
-            return match err {
-                NipcError::Overflow => Err(DispatchError::Overflow),
-                _ => Err(DispatchError::BadEnvelope),
-            };
-        }
-        if builder.item_count() != request.item_count {
-            return Err(DispatchError::BadEnvelope);
-        }
-        builder.finish().map_err(|err| match err {
-            NipcError::Overflow => DispatchError::Overflow,
-            _ => DispatchError::BadEnvelope,
+        protocol::dispatch_apps_lookup(request, response_buf, |request, builder| {
+            handler(request, builder)
         })
+        .map_err(dispatch_error_from_protocol)
     })
 }

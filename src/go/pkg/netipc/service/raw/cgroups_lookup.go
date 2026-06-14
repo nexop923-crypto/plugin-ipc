@@ -269,15 +269,10 @@ func CgroupsLookupDispatch(handle CgroupsLookupHandler) DispatchHandler {
 		return nil
 	}
 	return func(request []byte, responseBuf []byte) (int, error) {
-		handlerFailed := false
 		n, err := protocol.DispatchCgroupsLookup(request, responseBuf, func(req *protocol.CgroupsLookupRequestView, builder *protocol.CgroupsLookupBuilder) bool {
-			ok := handle(req, builder)
-			if !ok && builder.Error() == nil {
-				handlerFailed = true
-			}
-			return ok
+			return handle(req, builder)
 		})
-		if handlerFailed && errors.Is(err, protocol.ErrBadLayout) {
+		if errors.Is(err, protocol.ErrHandlerFailed) {
 			return 0, errHandlerFailed
 		}
 		return n, err

@@ -70,6 +70,10 @@ use server_session_unix::poll_fd;
 #[path = "raw_unix_tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "raw_lookup_dispatch_tests.rs"]
+mod lookup_dispatch_tests;
+
 #[cfg(all(test, windows))]
 #[path = "raw_windows_tests.rs"]
 mod windows_tests;

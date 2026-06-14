@@ -1452,8 +1452,8 @@ func TestLookupProtocolDispatchHandlerGuards(t *testing.T) {
 
 		n, err = DispatchAppsLookup(appsReq[:appsReqLen], resp[:],
 			func(*AppsLookupRequestView, *AppsLookupBuilder) bool { return false })
-		if n != 0 || !errors.Is(err, ErrBadLayout) {
-			t.Fatalf("apps dispatch false = n %d err %v, want 0 ErrBadLayout", n, err)
+		if n != 0 || !errors.Is(err, ErrHandlerFailed) {
+			t.Fatalf("apps dispatch false = n %d err %v, want 0 ErrHandlerFailed", n, err)
 		}
 
 		n, err = DispatchAppsLookup(appsReq[:appsReqLen], resp[:],
@@ -1491,8 +1491,8 @@ func TestLookupProtocolDispatchHandlerGuards(t *testing.T) {
 
 		n, err = DispatchCgroupsLookup(cgroupsReq[:cgroupsReqLen], resp[:],
 			func(*CgroupsLookupRequestView, *CgroupsLookupBuilder) bool { return false })
-		if n != 0 || !errors.Is(err, ErrBadLayout) {
-			t.Fatalf("cgroups dispatch false = n %d err %v, want 0 ErrBadLayout", n, err)
+		if n != 0 || !errors.Is(err, ErrHandlerFailed) {
+			t.Fatalf("cgroups dispatch false = n %d err %v, want 0 ErrHandlerFailed", n, err)
 		}
 
 		n, err = DispatchCgroupsLookup(cgroupsReq[:cgroupsReqLen], resp[:],

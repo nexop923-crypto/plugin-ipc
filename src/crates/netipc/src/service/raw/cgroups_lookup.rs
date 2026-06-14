@@ -1,6 +1,6 @@
 use super::client::{ClientConfig, RawCallKind, RawClient};
 use super::common::lookup_raw_response_size;
-use super::dispatch::{DispatchError, DispatchHandler};
+use super::dispatch::{dispatch_error_from_protocol, DispatchHandler};
 use crate::protocol::{
     self, CgroupsLookupBuilder, CgroupsLookupRequestView, CgroupsLookupResponseView, NipcError,
     CGROUPS_LOOKUP_ITEM_HDR_SIZE, CGROUPS_LOOKUP_REQ_HDR_SIZE, CGROUPS_LOOKUP_RESP_HDR_SIZE,
@@ -233,45 +233,9 @@ impl RawClient {
 
 pub fn cgroups_lookup_dispatch(handler: CgroupsLookupHandler) -> DispatchHandler {
     Arc::new(move |request, response_buf| {
-        let request =
-            CgroupsLookupRequestView::decode(request).map_err(|_| DispatchError::BadEnvelope)?;
-        let dir_size = (request.item_count as usize)
-            .checked_mul(LOOKUP_DIR_ENTRY_SIZE)
-            .ok_or(DispatchError::Overflow)?;
-        let min_required = protocol::CGROUPS_LOOKUP_RESP_HDR_SIZE
-            .checked_add(dir_size)
-            .ok_or(DispatchError::Overflow)?;
-        if response_buf.len() < min_required {
-            return Err(DispatchError::Overflow);
-        }
-        let mut builder = CgroupsLookupBuilder::new(response_buf, request.item_count, 0);
-        if request.item_count > 0 {
-            let mut payload_exceeded_item_lens = Vec::with_capacity(request.item_count as usize);
-            for i in 0..request.item_count {
-                let item = request.item(i).map_err(|_| DispatchError::BadEnvelope)?;
-                let item_len = CGROUPS_LOOKUP_ITEM_HDR_SIZE
-                    .checked_add(item.as_bytes().len())
-                    .and_then(|v| v.checked_add(2))
-                    .ok_or(DispatchError::Overflow)?;
-                payload_exceeded_item_lens.push(item_len);
-            }
-            builder.set_payload_exceeded_item_lens(payload_exceeded_item_lens);
-        }
-        if !handler(&request, &mut builder) {
-            return Err(DispatchError::HandlerFailed);
-        }
-        if let Some(err) = builder.error() {
-            return match err {
-                NipcError::Overflow => Err(DispatchError::Overflow),
-                _ => Err(DispatchError::BadEnvelope),
-            };
-        }
-        if builder.item_count() != request.item_count {
-            return Err(DispatchError::BadEnvelope);
-        }
-        builder.finish().map_err(|err| match err {
-            NipcError::Overflow => DispatchError::Overflow,
-            _ => DispatchError::BadEnvelope,
+        protocol::dispatch_cgroups_lookup(request, response_buf, |request, builder| {
+            handler(request, builder)
         })
+        .map_err(dispatch_error_from_protocol)
     })
 }

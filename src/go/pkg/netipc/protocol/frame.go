@@ -81,19 +81,20 @@ var ne = binary.NativeEndian
 // ---------------------------------------------------------------------------
 
 var (
-	ErrTruncated    = errors.New("buffer too short")
-	ErrBadMagic     = errors.New("magic value mismatch")
-	ErrBadVersion   = errors.New("unsupported version")
-	ErrBadHeaderLen = errors.New("header_len != 32")
-	ErrBadKind      = errors.New("unknown message kind")
-	ErrBadLayout    = errors.New("unknown layout_version")
-	ErrOutOfBounds  = errors.New("offset+length exceeds data")
-	ErrMissingNul   = errors.New("string not NUL-terminated")
-	ErrBadAlignment = errors.New("item not 8-byte aligned")
-	ErrBadItemCount = errors.New("item count inconsistent")
-	ErrOverflow     = errors.New("builder out of space")
-	ErrTimeout      = errors.New("synchronous call deadline expired")
-	ErrAborted      = errors.New("synchronous call aborted")
+	ErrTruncated     = errors.New("buffer too short")
+	ErrBadMagic      = errors.New("magic value mismatch")
+	ErrBadVersion    = errors.New("unsupported version")
+	ErrBadHeaderLen  = errors.New("header_len != 32")
+	ErrBadKind       = errors.New("unknown message kind")
+	ErrBadLayout     = errors.New("unknown layout_version")
+	ErrOutOfBounds   = errors.New("offset+length exceeds data")
+	ErrMissingNul    = errors.New("string not NUL-terminated")
+	ErrBadAlignment  = errors.New("item not 8-byte aligned")
+	ErrBadItemCount  = errors.New("item count inconsistent")
+	ErrOverflow      = errors.New("builder out of space")
+	ErrHandlerFailed = errors.New("dispatch handler failed")
+	ErrTimeout       = errors.New("synchronous call deadline expired")
+	ErrAborted       = errors.New("synchronous call aborted")
 )
 
 // ---------------------------------------------------------------------------

@@ -226,6 +226,12 @@ impl RawClient {
         &mut self,
         required: usize,
     ) -> Result<bool, NipcError> {
+        if self.abort_requested() {
+            self.disconnect();
+            self.state = ClientState::Broken;
+            self.error_count += 1;
+            return Err(NipcError::Aborted);
+        }
         let required = u32::try_from(required).map_err(|_| NipcError::Overflow)?;
         let max_request_payload_bytes = if self.transport_config.max_request_payload_bytes == 0 {
             crate::protocol::MAX_PAYLOAD_DEFAULT

@@ -1485,8 +1485,8 @@ func TestLookupDispatchCoverage(t *testing.T) {
 	n, err = DispatchCgroupsLookup(req[:reqLen], resp[:], func(*CgroupsLookupRequestView, *CgroupsLookupBuilder) bool {
 		return false
 	})
-	if err != ErrBadLayout || n != 0 {
-		t.Fatalf("dispatch cgroups handler false = n %d err %v", n, err)
+	if err != ErrHandlerFailed || n != 0 {
+		t.Fatalf("dispatch cgroups handler false = n %d err %v, want ErrHandlerFailed", n, err)
 	}
 	n, err = DispatchCgroupsLookup(req[:reqLen], resp[:], func(*CgroupsLookupRequestView, *CgroupsLookupBuilder) bool {
 		return true
@@ -1546,8 +1546,8 @@ func TestLookupDispatchCoverage(t *testing.T) {
 	n, err = DispatchAppsLookup(req[:reqLen], resp[:], func(*AppsLookupRequestView, *AppsLookupBuilder) bool {
 		return false
 	})
-	if err != ErrBadLayout || n != 0 {
-		t.Fatalf("dispatch apps handler false = n %d err %v", n, err)
+	if err != ErrHandlerFailed || n != 0 {
+		t.Fatalf("dispatch apps handler false = n %d err %v, want ErrHandlerFailed", n, err)
 	}
 	n, err = DispatchAppsLookup(req[:reqLen], resp[:], func(*AppsLookupRequestView, *AppsLookupBuilder) bool {
 		return true
