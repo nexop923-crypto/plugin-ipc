@@ -23,6 +23,7 @@ pub const APPS_LOOKUP_KEY_SIZE: usize = 8;
 #[derive(Debug)]
 pub struct AppsLookupRequestView<'a> {
     pub item_count: u32,
+    packed_start: usize,
     payload: &'a [u8],
 }
 
@@ -251,6 +252,7 @@ impl<'a> AppsLookupRequestView<'a> {
         }
         Ok(Self {
             item_count,
+            packed_start: dir_end,
             payload: buf,
         })
     }
@@ -259,12 +261,6 @@ impl<'a> AppsLookupRequestView<'a> {
         if index >= self.item_count {
             return Err(NipcError::OutOfBounds);
         }
-        let dir_size = (self.item_count as usize)
-            .checked_mul(LOOKUP_DIR_ENTRY_SIZE)
-            .ok_or(NipcError::BadItemCount)?;
-        let packed_start = APPS_LOOKUP_REQ_HDR_SIZE
-            .checked_add(dir_size)
-            .ok_or(NipcError::BadItemCount)?;
         let base = APPS_LOOKUP_REQ_HDR_SIZE
             .checked_add(
                 (index as usize)
@@ -274,7 +270,7 @@ impl<'a> AppsLookupRequestView<'a> {
             .ok_or(NipcError::BadItemCount)?;
         let off = u32_at(self.payload, base) as usize;
         Ok(u32_at(
-            checked_subslice(self.payload, packed_start, off, APPS_LOOKUP_KEY_SIZE)?,
+            checked_subslice(self.payload, self.packed_start, off, APPS_LOOKUP_KEY_SIZE)?,
             0,
         ))
     }
@@ -450,7 +446,7 @@ pub struct AppsLookupBuilder<'a> {
     data_offset: usize,
     error: Option<NipcError>,
     payload_exceeded_suffix: bool,
-    payload_exceeded_item_lens: Vec<usize>,
+    payload_exceeded_suffix_bytes: Vec<usize>,
 }
 
 impl<'a> AppsLookupBuilder<'a> {
@@ -471,7 +467,7 @@ impl<'a> AppsLookupBuilder<'a> {
             data_offset,
             error: None,
             payload_exceeded_suffix: false,
-            payload_exceeded_item_lens: Vec::new(),
+            payload_exceeded_suffix_bytes: Vec::new(),
         }
     }
 
@@ -480,7 +476,10 @@ impl<'a> AppsLookupBuilder<'a> {
     }
 
     pub fn set_payload_exceeded_item_lens(&mut self, item_lens: Vec<usize>) {
-        self.payload_exceeded_item_lens = item_lens;
+        match payload_exceeded_suffix_bytes_from_lens(item_lens) {
+            Ok(suffix_bytes) => self.payload_exceeded_suffix_bytes = suffix_bytes,
+            Err(err) => self.error = Some(err),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -579,7 +578,7 @@ impl<'a> AppsLookupBuilder<'a> {
         if !payload_exceeded_suffix_fits(
             self.buf.len(),
             item_end,
-            &self.payload_exceeded_item_lens,
+            &self.payload_exceeded_suffix_bytes,
             self.item_count + 1,
             self.max_items,
         ) {
@@ -780,10 +779,14 @@ where
     }
     let mut builder = AppsLookupBuilder::new(resp, request.item_count, 0);
     if request.item_count > 0 {
-        builder.set_payload_exceeded_item_lens(vec![
-            APPS_LOOKUP_ITEM_HDR_SIZE + 3;
-            request.item_count as usize
-        ]);
+        let item_count = request.item_count as usize;
+        let capacity = item_count.checked_add(1).ok_or(NipcError::Overflow)?;
+        let mut item_lens = Vec::with_capacity(capacity);
+        item_lens.resize(item_count, APPS_LOOKUP_ITEM_HDR_SIZE + 3);
+        builder.set_payload_exceeded_item_lens(item_lens);
+        if let Some(err) = builder.error {
+            return Err(err);
+        }
     }
     if !handler(&request, &mut builder) {
         return Err(builder.error().unwrap_or(NipcError::HandlerFailed));

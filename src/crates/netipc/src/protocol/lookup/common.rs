@@ -166,36 +166,49 @@ pub(super) fn lookup_dir_entry_offset(hdr_size: usize, index: u32) -> Result<usi
         .ok_or(NipcError::BadItemCount)
 }
 
+pub(super) fn payload_exceeded_suffix_bytes_from_lens(
+    mut item_lens: Vec<usize>,
+) -> Result<Vec<usize>, NipcError> {
+    item_lens.push(0);
+    for i in (0..item_lens.len() - 1).rev() {
+        let next = item_lens[i + 1];
+        let item_cost = if next > 0 {
+            item_lens[i].checked_add(7).map(|v| v & !7)
+        } else {
+            Some(item_lens[i])
+        }
+        .ok_or(NipcError::Overflow)?;
+        item_lens[i] = item_cost.checked_add(next).ok_or(NipcError::Overflow)?;
+    }
+    Ok(item_lens)
+}
+
 pub(super) fn payload_exceeded_suffix_fits(
     buf_len: usize,
-    mut data_offset: usize,
-    item_lens: &[usize],
+    data_offset: usize,
+    suffix_bytes: &[usize],
     first_index: u32,
     max_items: u32,
 ) -> bool {
-    if item_lens.len() != max_items as usize {
+    let max_items = max_items as usize;
+    let Some(expected_len) = max_items.checked_add(1) else {
+        return true;
+    };
+    if suffix_bytes.len() != expected_len {
         return true;
     }
-    for item_len in item_lens
-        .iter()
-        .take(max_items as usize)
-        .skip(first_index as usize)
-    {
-        let Some(item_start) = data_offset.checked_add(7).map(|v| v & !7) else {
-            return false;
-        };
-        if item_start > buf_len {
-            return false;
-        }
-        let Some(item_end) = item_start.checked_add(*item_len) else {
-            return false;
-        };
-        if item_end > buf_len {
-            return false;
-        }
-        data_offset = item_end;
+    let first_index = first_index as usize;
+    if first_index > max_items {
+        return true;
     }
-    true
+    if data_offset > usize::MAX - 7 {
+        return false;
+    }
+    let item_start = align8(data_offset);
+    if item_start > buf_len {
+        return false;
+    }
+    suffix_bytes[first_index] <= buf_len - item_start
 }
 
 pub(super) fn validate_labels(

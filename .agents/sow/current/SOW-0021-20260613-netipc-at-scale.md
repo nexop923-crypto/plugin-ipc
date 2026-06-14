@@ -1156,6 +1156,37 @@ Follow-up mapping:
   - add any remaining broader adversarial tests from the planned matrix beyond the now-covered representative `8192`/`32768` logical-call cases, now-covered mid-logical timeout/abort cases, now-covered malformed follow-up responses after partial progress, now-covered reordered/duplicate response-item corruption, now-covered invalid status/status-dependent/label-table response corruption, now-covered huge valid label isolation cases, now-covered endpoint absence before call, now-covered endpoint disappearance after partial progress, now-covered endpoint disappearance before the first subcall, now-covered zero-item typed lookup calls, now-covered stale request-capacity reconnect cases, now-covered duplicate/unsorted request keys under request splitting, now-covered request cap-minus-one/exact/plus-one boundaries, now-covered exact response-fit plus/minus-one boundaries, now-covered no-progress overflow cases, now-covered raw no-growth overflow cases, now-covered logical response-byte ceilings, now-covered mixed-status cross-language interop cases, and now-covered lookup status codec interop cases;
   - keep lookup-scale interop green across POSIX baseline, POSIX SHM, Windows Named Pipe, and Windows SHM; all four profiles now cover both all-known scale and mixed-status C/Rust/Go directed tests.
 
+## Performance Checkpoint - 2026-06-15
+
+Context:
+
+- A direct benchmark sample showed `cgroups-lookup-mixed-256` at roughly C `61.6k`, Rust `43.7k`, Go `25.9k` requests/s.
+- The gap was not accepted as normal runtime noise. The lookup hot paths were reviewed language-by-language before committing.
+
+Confirmed causes fixed in this checkpoint:
+
+- C, Rust, and Go all had an O(n^2)-style response-overflow suffix-fit check in lookup builders. This was replaced with precomputed suffix bytes for dispatch-owned builders.
+- Rust and Go cgroups dispatch paths called `request.Item(i)` in the payload-exceeded sizing prepass only to recover the already-validated request directory length. Both now read that length directly.
+- Go response validation built item view objects while validating each response item. Go now has validate-only lookup item paths separate from public view construction.
+- Go request views now cache the request packed-start offset instead of recomputing it on each item access.
+
+Focused validation:
+
+- `cd src/go && go test -count=1 ./pkg/netipc/protocol` passed.
+- `cargo test --manifest-path src/crates/netipc/Cargo.toml protocol::lookup -- --test-threads=1` passed.
+- `cmake --build build --target test_protocol -j24 && build/bin/test_protocol` passed with `514 passed, 0 failed`.
+
+Sampled benchmark evidence after fixes, using release benchmark binaries:
+
+- `cgroups-lookup-mixed-256`: C about `63k`, Rust about `48k`, Go about `34k-35k` requests/s.
+- `apps-lookup-mixed-256`: C about `69k`, Rust about `62k`, Go about `40k-42k` requests/s.
+
+Current interpretation:
+
+- Rust is no longer broadly suspicious: `apps-lookup-mixed-256` is close to C, and the cgroups-specific avoidable overhead was reduced.
+- Go remains materially slower than C/Rust in these codec+dispatch microbenchmarks. The obvious avoidable algorithmic and allocation issues found so far are fixed, but the remaining gap still needs full-suite benchmark confirmation and, if required, profiling before declaring it inherent Go/runtime overhead.
+- This checkpoint does not close the performance gate. Full POSIX and Windows benchmark regeneration still needs to be run cleanly after commit/push.
+
 ## Downstream Vendoring Plan
 
 Purpose:

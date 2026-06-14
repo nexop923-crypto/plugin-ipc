@@ -519,6 +519,7 @@ typedef struct {
   size_t data_offset;
   bool payload_exceeded_suffix;
   const uint32_t *payload_exceeded_item_lens;
+  uint32_t *payload_exceeded_suffix_bytes;
   uint32_t payload_exceeded_item_lens_count;
 } nipc_cgroups_lookup_builder_t;
 
@@ -568,6 +569,7 @@ typedef struct {
   size_t data_offset;
   bool payload_exceeded_suffix;
   const uint32_t *payload_exceeded_item_lens;
+  uint32_t *payload_exceeded_suffix_bytes;
   uint32_t payload_exceeded_item_lens_count;
 } nipc_apps_lookup_builder_t;
 

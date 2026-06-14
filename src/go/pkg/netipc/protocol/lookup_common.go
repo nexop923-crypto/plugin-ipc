@@ -134,30 +134,89 @@ func checkedAlign8(v int) (int, bool) {
 	return Align8(v), true
 }
 
-func payloadExceededSuffixFits(bufLen, dataOffset int, itemLens []int, first, maxItems uint32) bool {
-	maxItemsInt, ok := checkedInt(uint64(maxItems))
-	if !ok || len(itemLens) != maxItemsInt {
+func buildPayloadExceededSuffixBytes(itemLens []int) ([]int, bool) {
+	suffixBytes := make([]int, len(itemLens)+1)
+	copy(suffixBytes, itemLens)
+	if !finishPayloadExceededSuffixBytes(suffixBytes) {
+		return nil, false
+	}
+	return suffixBytes, true
+}
+
+func makePayloadExceededSuffixBytes(itemCount uint32) ([]int, bool) {
+	count, ok := checkedInt(uint64(itemCount))
+	if !ok || count == maxIntValue() {
+		return nil, false
+	}
+	return make([]int, count+1), true
+}
+
+func finishPayloadExceededSuffixBytes(suffixBytes []int) bool {
+	if len(suffixBytes) == 0 {
 		return true
 	}
-	firstInt, ok := checkedInt(uint64(first))
-	if !ok {
-		return false
-	}
-	if firstInt > maxItemsInt {
-		return true
-	}
-	for i := firstInt; i < maxItemsInt; i++ {
-		itemStart, ok := checkedAlign8(dataOffset)
-		if !ok || itemStart > bufLen {
+	suffixBytes[len(suffixBytes)-1] = 0
+	for i := len(suffixBytes) - 2; i >= 0; i-- {
+		itemLen := suffixBytes[i]
+		if itemLen < 0 {
 			return false
 		}
-		itemEnd, ok := checkedAddInt(itemStart, itemLens[i])
-		if !ok || itemEnd > bufLen {
+		itemCost := itemLen
+		if suffixBytes[i+1] > 0 {
+			var ok bool
+			itemCost, ok = checkedAlign8(itemLen)
+			if !ok {
+				return false
+			}
+		}
+		total, ok := checkedAddInt(itemCost, suffixBytes[i+1])
+		if !ok {
 			return false
 		}
-		dataOffset = itemEnd
+		suffixBytes[i] = total
 	}
 	return true
+}
+
+func buildFixedPayloadExceededSuffixBytes(itemCount uint32, itemLen int) ([]int, bool) {
+	suffixBytes, ok := makePayloadExceededSuffixBytes(itemCount)
+	if !ok {
+		return nil, false
+	}
+	for i := 0; i < len(suffixBytes)-1; i++ {
+		suffixBytes[i] = itemLen
+	}
+	if !finishPayloadExceededSuffixBytes(suffixBytes) {
+		return nil, false
+	}
+	return suffixBytes, true
+}
+
+func payloadExceededSuffixFits(bufLen, dataOffset int, suffixBytes []int, first, maxItems uint32) bool {
+	maxInt := maxIntValue()
+	if uint64(maxItems) > uint64(maxInt) {
+		return true
+	}
+	maxItemsInt := int(maxItems) // #nosec G115 -- maxItems is bounded by maxInt above.
+	if maxItemsInt == maxInt || len(suffixBytes) != maxItemsInt+1 {
+		return true
+	}
+	if uint64(first) > uint64(maxInt) {
+		return false
+	}
+	if first > maxItems {
+		return true
+	}
+	firstInt := int(first) // #nosec G115 -- first is bounded by maxInt above.
+	if dataOffset < 0 || dataOffset > maxInt-7 {
+		return false
+	}
+	itemStart := Align8(dataOffset)
+	if itemStart > bufLen {
+		return false
+	}
+	suffixBytesNeeded := suffixBytes[firstInt]
+	return suffixBytesNeeded >= 0 && suffixBytesNeeded <= bufLen-itemStart
 }
 
 func validateLookupDir(buf []byte, dirStart int, itemCount uint32, packedAreaLen int, minLen int, exactLen int) error {
@@ -227,34 +286,59 @@ func validateLookupDir(buf []byte, dirStart int, itemCount uint32, packedAreaLen
 }
 
 func lookupString(item []byte, hdrSize int, off int, length int) (CStringView, int, error) {
+	var view CStringView
+	end, err := lookupStringInto(item, hdrSize, off, length, &view)
+	return view, end, err
+}
+
+func viewOut[T any](owner *T, view *CStringView) *CStringView {
+	if owner == nil {
+		return nil
+	}
+	return view
+}
+
+func lookupStringInto(item []byte, hdrSize int, off int, length int, out *CStringView) (int, error) {
 	if off < hdrSize {
-		return CStringView{}, 0, ErrOutOfBounds
+		return 0, ErrOutOfBounds
 	}
 	nul, ok := checkedAddInt(off, length)
 	if !ok || nul >= len(item) {
-		return CStringView{}, 0, ErrOutOfBounds
+		return 0, ErrOutOfBounds
 	}
 	if item[nul] != 0 {
-		return CStringView{}, 0, ErrMissingNul
+		return 0, ErrMissingNul
 	}
-	if bytes.Contains(item[off:nul], []byte{0}) {
-		return CStringView{}, 0, ErrBadLayout
+	if bytes.IndexByte(item[off:nul], 0) >= 0 {
+		return 0, ErrBadLayout
 	}
-	length32, ok := checkedU32Int(length)
-	if !ok {
-		return CStringView{}, 0, ErrOutOfBounds
+	if out != nil {
+		length32, ok := checkedU32Int(length)
+		if !ok {
+			return 0, ErrOutOfBounds
+		}
+		*out = NewCStringView(item[off:nul+1], length32)
 	}
-	return NewCStringView(item[off:nul+1], length32), nul + 1, nil
+	return nul + 1, nil
 }
 
 func lookupEmptyString(item []byte, hdrSize int, off int) (CStringView, int, error) {
+	var view CStringView
+	end, err := lookupEmptyStringInto(item, hdrSize, off, &view)
+	return view, end, err
+}
+
+func lookupEmptyStringInto(item []byte, hdrSize int, off int, out *CStringView) (int, error) {
 	if off < hdrSize || off >= len(item) {
-		return CStringView{}, 0, ErrOutOfBounds
+		return 0, ErrOutOfBounds
 	}
 	if item[off] != 0 {
-		return CStringView{}, 0, ErrMissingNul
+		return 0, ErrMissingNul
 	}
-	return NewCStringView(item[off:off+1], 0), off + 1, nil
+	if out != nil {
+		*out = NewCStringView(item[off:off+1], 0)
+	}
+	return off + 1, nil
 }
 
 func overlap(aStart, aEnd, bStart, bEnd int) bool {

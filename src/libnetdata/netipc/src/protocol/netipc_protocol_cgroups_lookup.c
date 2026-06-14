@@ -400,6 +400,9 @@ void nipc_cgroups_lookup_builder_init(nipc_cgroups_lookup_builder_t *b,
   b->max_items = max_items;
   b->error = NIPC_OK;
   b->payload_exceeded_suffix = false;
+  b->payload_exceeded_item_lens = NULL;
+  b->payload_exceeded_suffix_bytes = NULL;
+  b->payload_exceeded_item_lens_count = 0;
   if (mul_would_overflow((size_t)max_items, NIPC_LOOKUP_DIR_ENTRY_SIZE)) {
     b->data_offset = SIZE_MAX;
   } else {
@@ -424,12 +427,24 @@ void nipc_cgroups_lookup_builder_set_payload_exceeded_item_lens(
     nipc_cgroups_lookup_builder_t *b, const uint32_t *item_lens,
     uint32_t item_count) {
   b->payload_exceeded_item_lens = item_lens;
+  b->payload_exceeded_suffix_bytes = NULL;
   b->payload_exceeded_item_lens_count = item_count;
 }
 
 static bool
 cgroups_lookup_builder_suffix_fits(const nipc_cgroups_lookup_builder_t *b,
                                    size_t data_offset, uint32_t first_index) {
+  if (b->payload_exceeded_suffix_bytes &&
+      b->payload_exceeded_item_lens_count == b->max_items) {
+    if (first_index > b->max_items)
+      return true;
+    size_t item_start = nipc_align8(data_offset);
+    if (item_start < data_offset || item_start > b->buf_len)
+      return false;
+    return (size_t)b->payload_exceeded_suffix_bytes[first_index] <=
+           b->buf_len - item_start;
+  }
+
   if (!b->payload_exceeded_item_lens ||
       b->payload_exceeded_item_lens_count != b->max_items)
     return true;
@@ -589,15 +604,15 @@ nipc_error_t nipc_dispatch_cgroups_lookup(
   if (err != NIPC_OK)
     return err;
 
-  uint32_t *payload_exceeded_lens = NULL;
+  uint32_t *payload_exceeded_suffix_bytes = NULL;
   if (request.item_count > 0) {
-    if ((size_t)request.item_count >
-        ((size_t)-1) / sizeof(*payload_exceeded_lens))
+    if ((size_t)request.item_count >=
+        ((size_t)-1) / sizeof(*payload_exceeded_suffix_bytes))
       return NIPC_ERR_OVERFLOW;
-    payload_exceeded_lens =
-        (uint32_t *)malloc((size_t)request.item_count *
-                           sizeof(*payload_exceeded_lens));
-    if (!payload_exceeded_lens)
+    payload_exceeded_suffix_bytes =
+        (uint32_t *)malloc(((size_t)request.item_count + 1u) *
+                           sizeof(*payload_exceeded_suffix_bytes));
+    if (!payload_exceeded_suffix_bytes)
       return NIPC_ERR_OVERFLOW;
     for (uint32_t i = 0; i < request.item_count; i++) {
       nipc_cgroups_lookup_req_item_t item;
@@ -608,16 +623,30 @@ nipc_error_t nipc_dispatch_cgroups_lookup(
         err = NIPC_ERR_OVERFLOW;
         goto cleanup;
       }
-      payload_exceeded_lens[i] =
+      payload_exceeded_suffix_bytes[i] =
           NIPC_CGROUPS_LOOKUP_ITEM_HDR_SIZE + item.path.len + 2u;
+    }
+    payload_exceeded_suffix_bytes[request.item_count] = 0;
+    for (uint32_t i = request.item_count; i > 0; i--) {
+      uint32_t idx = i - 1u;
+      size_t item_cost = payload_exceeded_suffix_bytes[idx];
+      if (payload_exceeded_suffix_bytes[idx + 1u] > 0u)
+        item_cost = nipc_align8(item_cost);
+      if (item_cost > UINT32_MAX ||
+          item_cost > UINT32_MAX - payload_exceeded_suffix_bytes[idx + 1u]) {
+        err = NIPC_ERR_OVERFLOW;
+        goto cleanup;
+      }
+      payload_exceeded_suffix_bytes[idx] =
+          (uint32_t)item_cost + payload_exceeded_suffix_bytes[idx + 1u];
     }
   }
 
   nipc_cgroups_lookup_builder_t builder;
   nipc_cgroups_lookup_builder_init(&builder, resp, resp_size,
                                    request.item_count, 0);
-  nipc_cgroups_lookup_builder_set_payload_exceeded_item_lens(
-      &builder, payload_exceeded_lens, request.item_count);
+  builder.payload_exceeded_suffix_bytes = payload_exceeded_suffix_bytes;
+  builder.payload_exceeded_item_lens_count = request.item_count;
 
   if (!handler(user, &request, &builder)) {
     err = builder.error != NIPC_OK ? builder.error : NIPC_ERR_HANDLER_FAILED;
@@ -637,6 +666,6 @@ nipc_error_t nipc_dispatch_cgroups_lookup(
   err = (*resp_len > 0) ? NIPC_OK : NIPC_ERR_OVERFLOW;
 
 cleanup:
-  free(payload_exceeded_lens);
+  free(payload_exceeded_suffix_bytes);
   return err;
 }

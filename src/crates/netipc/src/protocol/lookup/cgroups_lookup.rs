@@ -16,6 +16,7 @@ pub const CGROUPS_LOOKUP_ITEM_HDR_SIZE: usize = 28;
 #[derive(Debug)]
 pub struct CgroupsLookupRequestView<'a> {
     pub item_count: u32,
+    packed_start: usize,
     payload: &'a [u8],
 }
 
@@ -148,6 +149,7 @@ impl<'a> CgroupsLookupRequestView<'a> {
         }
         Ok(Self {
             item_count,
+            packed_start: dir_end,
             payload: buf,
         })
     }
@@ -156,12 +158,6 @@ impl<'a> CgroupsLookupRequestView<'a> {
         if index >= self.item_count {
             return Err(NipcError::OutOfBounds);
         }
-        let dir_size = (self.item_count as usize)
-            .checked_mul(LOOKUP_DIR_ENTRY_SIZE)
-            .ok_or(NipcError::BadItemCount)?;
-        let packed_start = CGROUPS_LOOKUP_REQ_HDR_SIZE
-            .checked_add(dir_size)
-            .ok_or(NipcError::BadItemCount)?;
         let base = CGROUPS_LOOKUP_REQ_HDR_SIZE
             .checked_add(
                 (index as usize)
@@ -172,9 +168,27 @@ impl<'a> CgroupsLookupRequestView<'a> {
         let off = u32_at(self.payload, base) as usize;
         let len = u32_at(self.payload, base + 4) as usize;
         Ok(StrView {
-            bytes: checked_subslice(self.payload, packed_start, off, len)?,
+            bytes: checked_subslice(self.payload, self.packed_start, off, len)?,
             len: (len - 1) as u32,
         })
+    }
+
+    fn payload_exceeded_item_len(&self, index: u32) -> Result<usize, NipcError> {
+        if index >= self.item_count {
+            return Err(NipcError::OutOfBounds);
+        }
+        let base = CGROUPS_LOOKUP_REQ_HDR_SIZE
+            .checked_add(
+                (index as usize)
+                    .checked_mul(LOOKUP_DIR_ENTRY_SIZE)
+                    .ok_or(NipcError::BadItemCount)?,
+            )
+            .ok_or(NipcError::BadItemCount)?;
+        let path_wire_len = u32_at(self.payload, base + 4) as usize;
+        CGROUPS_LOOKUP_ITEM_HDR_SIZE
+            .checked_add(path_wire_len)
+            .and_then(|v| v.checked_add(1))
+            .ok_or(NipcError::Overflow)
     }
 }
 
@@ -324,7 +338,7 @@ pub struct CgroupsLookupBuilder<'a> {
     data_offset: usize,
     error: Option<NipcError>,
     payload_exceeded_suffix: bool,
-    payload_exceeded_item_lens: Vec<usize>,
+    payload_exceeded_suffix_bytes: Vec<usize>,
 }
 
 impl<'a> CgroupsLookupBuilder<'a> {
@@ -345,7 +359,7 @@ impl<'a> CgroupsLookupBuilder<'a> {
             data_offset,
             error: None,
             payload_exceeded_suffix: false,
-            payload_exceeded_item_lens: Vec::new(),
+            payload_exceeded_suffix_bytes: Vec::new(),
         }
     }
 
@@ -354,7 +368,10 @@ impl<'a> CgroupsLookupBuilder<'a> {
     }
 
     pub fn set_payload_exceeded_item_lens(&mut self, item_lens: Vec<usize>) {
-        self.payload_exceeded_item_lens = item_lens;
+        match payload_exceeded_suffix_bytes_from_lens(item_lens) {
+            Ok(suffix_bytes) => self.payload_exceeded_suffix_bytes = suffix_bytes,
+            Err(err) => self.error = Some(err),
+        }
     }
 
     pub fn add(
@@ -432,7 +449,7 @@ impl<'a> CgroupsLookupBuilder<'a> {
         if !payload_exceeded_suffix_fits(
             self.buf.len(),
             item_end,
-            &self.payload_exceeded_item_lens,
+            &self.payload_exceeded_suffix_bytes,
             self.item_count + 1,
             self.max_items,
         ) {
@@ -619,16 +636,16 @@ where
     }
     let mut builder = CgroupsLookupBuilder::new(resp, request.item_count, 0);
     if request.item_count > 0 {
-        let mut payload_exceeded_item_lens = Vec::with_capacity(request.item_count as usize);
+        let item_count = request.item_count as usize;
+        let capacity = item_count.checked_add(1).ok_or(NipcError::Overflow)?;
+        let mut payload_exceeded_item_lens = Vec::with_capacity(capacity);
         for i in 0..request.item_count {
-            let item = request.item(i)?;
-            let item_len = CGROUPS_LOOKUP_ITEM_HDR_SIZE
-                .checked_add(item.as_bytes().len())
-                .and_then(|v| v.checked_add(2))
-                .ok_or(NipcError::Overflow)?;
-            payload_exceeded_item_lens.push(item_len);
+            payload_exceeded_item_lens.push(request.payload_exceeded_item_len(i)?);
         }
         builder.set_payload_exceeded_item_lens(payload_exceeded_item_lens);
+        if let Some(err) = builder.error {
+            return Err(err);
+        }
     }
     if !handler(&request, &mut builder) {
         return Err(builder.error().unwrap_or(NipcError::HandlerFailed));

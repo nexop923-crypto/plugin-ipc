@@ -61,19 +61,22 @@ func TestLookupRequestEncodeAndViewGuards(t *testing.T) {
 func TestLookupSyntheticArithmeticGuards(t *testing.T) {
 	maxInt := maxIntValue()
 
-	if payloadExceededSuffixFits(16, 0, []int{1}, 0, 2) != true {
-		t.Fatal("mismatched suffix lens should be treated as non-actionable")
+	if suffixBytes, ok := buildPayloadExceededSuffixBytes([]int{4, 4}); !ok || len(suffixBytes) != 3 || suffixBytes[0] != 12 || suffixBytes[1] != 4 || suffixBytes[2] != 0 {
+		t.Fatalf("suffix bytes = %v ok=%v, want [12 4 0] true", suffixBytes, ok)
 	}
-	if payloadExceededSuffixFits(16, 0, []int{1}, 2, 1) != true {
+	if payloadExceededSuffixFits(16, 0, []int{1}, 0, 2) != true {
+		t.Fatal("mismatched suffix byte table should be treated as non-actionable")
+	}
+	if payloadExceededSuffixFits(16, 0, []int{1, 0}, 2, 1) != true {
 		t.Fatal("suffix starting after max items should fit vacuously")
 	}
-	if payloadExceededSuffixFits(16, maxInt, []int{1}, 0, 1) != false {
+	if payloadExceededSuffixFits(16, maxInt, []int{1, 0}, 0, 1) != false {
 		t.Fatal("suffix with overflowing alignment should not fit")
 	}
-	if payloadExceededSuffixFits(16, 0, []int{maxInt}, 0, 1) != false {
+	if payloadExceededSuffixFits(16, 0, []int{maxInt, 0}, 0, 1) != false {
 		t.Fatal("suffix with overflowing item end should not fit")
 	}
-	if payloadExceededSuffixFits(16, 0, []int{4, 4}, 1, 2) != true {
+	if payloadExceededSuffixFits(16, 0, []int{12, 4, 0}, 1, 2) != true {
 		t.Fatal("valid suffix should fit")
 	}
 
@@ -1889,7 +1892,7 @@ func TestLookupThirtyTwoBitGuardCoverage(t *testing.T) {
 	if got := payloadExceededSuffixFits(0, 0, nil, 0, hugeLookupItems); !got {
 		t.Fatal("payloadExceededSuffixFits should ignore unrepresentable maxItems")
 	}
-	if got := payloadExceededSuffixFits(0, 0, make([]int, 1), overMaxInt, 1); got {
+	if got := payloadExceededSuffixFits(0, 0, make([]int, 2), overMaxInt, 1); got {
 		t.Fatal("payloadExceededSuffixFits should reject unrepresentable first index")
 	}
 
