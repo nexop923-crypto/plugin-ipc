@@ -310,10 +310,9 @@ static nipc_error_t do_apps_lookup_attempt(nipc_client_ctx_t *ctx,
     start += payload_exceeded_at;
   }
 
-  if (accepted != s->pid_count) {
-    err = NIPC_ERR_BAD_ITEM_COUNT;
+  err = (accepted == s->pid_count) ? NIPC_OK : NIPC_ERR_BAD_ITEM_COUNT;
+  if (err != NIPC_OK)
     goto cleanup;
-  }
 
   size_t final_size;
   err = apps_lookup_raw_response_size(item_lens, accepted, &final_size);

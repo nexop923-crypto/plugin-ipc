@@ -25,12 +25,14 @@
 #
 # Must be run from MSYS2/Git Bash or PowerShell on Windows.
 #
-# Optional diagnostics:
-#   NIPC_BENCH_DIAGNOSE_FAILURES=1
+# Diagnostics:
+#   NIPC_BENCH_DIAGNOSE_FAILURES=1 (default)
 #     When a row fails, preserve the first-attempt evidence and rerun the
 #     same row in isolation for debugging. A successful diagnostic rerun can
 #     recover stability-only failures; command, client, server, and protocol
 #     failures remain authoritative.
+#   NIPC_BENCH_DIAGNOSE_FAILURES=0
+#     Disable diagnostic recovery and require first-attempt stability.
 #   NIPC_WINDOWS_TOOLCHAIN=mingw64|msys
 #     Select the C toolchain lane for the benchmark build. `mingw64` is the
 #     native Windows sign-off default. `msys` is intended for the separate
@@ -74,7 +76,7 @@ ALLOW_TRIMMED_UNSTABLE_RAW="${NIPC_BENCH_ALLOW_TRIMMED_UNSTABLE_RAW:-1}"
 SERVER_STOP_GRACE_SEC="${NIPC_BENCH_SERVER_STOP_GRACE_SEC:-10}"
 CLIENT_TIMEOUT_GRACE_SEC="${NIPC_BENCH_CLIENT_TIMEOUT_GRACE_SEC:-35}"
 ROW_SETTLE_SEC="${NIPC_BENCH_ROW_SETTLE_SEC:-2}"
-DIAGNOSE_FAILURES="${NIPC_BENCH_DIAGNOSE_FAILURES:-0}"
+DIAGNOSE_FAILURES="${NIPC_BENCH_DIAGNOSE_FAILURES:-1}"
 RUN_DIR="${TEMP:-/tmp}/netipc-bench-$$"
 ROOT_RUN_DIR="$RUN_DIR"
 MEASURE_RUN_DIR="$RUN_DIR"

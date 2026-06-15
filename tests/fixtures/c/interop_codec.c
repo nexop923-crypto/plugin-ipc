@@ -19,6 +19,7 @@
 
 static int g_pass = 0;
 static int g_fail = 0;
+static char g_run_dir[PATH_MAX];
 
 #define CHECK(cond, name)                                  \
     do {                                                   \
@@ -31,9 +32,35 @@ static int g_fail = 0;
         }                                                  \
     } while (0)
 
+#if defined(_WIN32) && !defined(__MSYS__)
+static int make_file_path(char *out, size_t out_len, const char *name) {
+    size_t dir_len = strlen(g_run_dir);
+    const char *sep = (dir_len > 0 &&
+                       (g_run_dir[dir_len - 1] == '/' ||
+                        g_run_dir[dir_len - 1] == '\\')) ? "" : "/";
+    int n = snprintf(out, out_len, "%s%s%s", g_run_dir, sep, name);
+    if (n < 0 || (size_t)n >= out_len) {
+        fprintf(stderr, "ERROR: file path too long: %s\n", name);
+        return 1;
+    }
+    return 0;
+}
+#endif
+
 /* Write raw bytes to a file. Returns 0 on success. */
 static int write_file(int dir_fd, const char *name,
                        const void *data, size_t len) {
+#if defined(_WIN32) && !defined(__MSYS__)
+    (void)dir_fd;
+    char path[PATH_MAX];
+    if (make_file_path(path, sizeof(path), name) != 0)
+        return 1;
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        fprintf(stderr, "ERROR: cannot open %s for writing\n", name);
+        return 1;
+    }
+#else
     int fd = openat(dir_fd, name, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
     if (fd < 0) {
         fprintf(stderr, "ERROR: cannot open %s for writing\n", name);
@@ -45,6 +72,7 @@ static int write_file(int dir_fd, const char *name,
         fprintf(stderr, "ERROR: cannot open %s for writing\n", name);
         return 1;
     }
+#endif
     if (fwrite(data, 1, len, f) != len) {
         fclose(f);
         return 1;
@@ -56,6 +84,17 @@ static int write_file(int dir_fd, const char *name,
 /* Read raw bytes from a file. Returns bytes read, 0 on failure. */
 static size_t read_file(int dir_fd, const char *name,
                          void *buf, size_t buf_len) {
+#if defined(_WIN32) && !defined(__MSYS__)
+    (void)dir_fd;
+    char path[PATH_MAX];
+    if (make_file_path(path, sizeof(path), name) != 0)
+        return 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "ERROR: cannot open %s for reading\n", name);
+        return 0;
+    }
+#else
     int fd = openat(dir_fd, name, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
         fprintf(stderr, "ERROR: cannot open %s for reading\n", name);
@@ -67,6 +106,7 @@ static size_t read_file(int dir_fd, const char *name,
         fprintf(stderr, "ERROR: cannot open %s for reading\n", name);
         return 0;
     }
+#endif
     size_t n = fread(buf, 1, buf_len, f);
     fclose(f);
     return n;
@@ -725,8 +765,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    char run_dir[PATH_MAX];
-    int dir_fd = nipc_test_open_run_dir(argv[2], run_dir, sizeof(run_dir));
+    int dir_fd = nipc_test_open_run_dir(argv[2], g_run_dir, sizeof(g_run_dir));
     if (dir_fd < 0)
         return 1;
 
@@ -740,6 +779,8 @@ int main(int argc, char **argv) {
         rc = 1;
     }
 
+#if !(defined(_WIN32) && !defined(__MSYS__))
     close(dir_fd);
+#endif
     return rc;
 }

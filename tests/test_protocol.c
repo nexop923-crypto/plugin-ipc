@@ -2590,6 +2590,7 @@ static void test_lookup_response_exact_and_short_boundary(void) {
 static void test_lookup_responses_reject_bad_layouts(void) {
     uint8_t buf[1024];
     uint8_t bad[1024];
+    uint8_t out[1024];
     size_t n = build_cgroups_lookup_labeled(buf, sizeof(buf));
     CHECK(n > 0, "build cgroups_lookup response for negative tests");
     nipc_cgroups_lookup_resp_view_t c_view;
@@ -2769,6 +2770,76 @@ static void test_lookup_responses_reject_bad_layouts(void) {
           get32(bad, NIPC_CGROUPS_LOOKUP_RESP_HDR_SIZE));
     CHECK(nipc_cgroups_lookup_resp_decode(bad, n, &c_view) == NIPC_ERR_BAD_LAYOUT,
           "cgroups_lookup response rejects inter-item overlap");
+
+    CHECK(nipc_cgroups_lookup_resp_decode(buf, n, &c_view) == NIPC_OK,
+          "cgroups_lookup guard response decode");
+    const uint8_t *raw_item = NULL;
+    uint32_t raw_len = 0;
+    CHECK(nipc_cgroups_lookup_resp_raw_item(&c_view, c_view.item_count,
+                                            &raw_item, &raw_len) ==
+              NIPC_ERR_OUT_OF_BOUNDS,
+          "cgroups_lookup raw item rejects oob index");
+    CHECK(nipc_cgroups_lookup_resp_raw_item(&c_view, 0, &raw_item, &raw_len) ==
+              NIPC_OK,
+          "cgroups_lookup raw item extracts item");
+
+    nipc_cgroups_lookup_resp_view_t manual_c_view = c_view;
+    manual_c_view._payload_len = NIPC_CGROUPS_LOOKUP_RESP_HDR_SIZE;
+    CHECK(nipc_cgroups_lookup_resp_raw_item(&manual_c_view, 0, &raw_item,
+                                            &raw_len) == NIPC_ERR_TRUNCATED,
+          "cgroups_lookup raw item rejects truncated payload view");
+
+    memcpy(bad, buf, n);
+    put32(bad, NIPC_CGROUPS_LOOKUP_RESP_HDR_SIZE + 4, UINT32_MAX);
+    manual_c_view = c_view;
+    manual_c_view._payload = bad;
+    manual_c_view._payload_len = n;
+    CHECK(nipc_cgroups_lookup_resp_raw_item(&manual_c_view, 0, &raw_item,
+                                            &raw_len) == NIPC_ERR_OUT_OF_BOUNDS,
+          "cgroups_lookup raw item rejects oob directory entry");
+
+    size_t encoded_len = 0;
+    CHECK(nipc_cgroups_lookup_raw_resp_encode(
+              NULL, NULL, 1, 0, out, sizeof(out), &encoded_len) ==
+              NIPC_ERR_BAD_LAYOUT,
+          "cgroups_lookup raw response rejects missing item arrays");
+
+    CHECK(nipc_cgroups_lookup_resp_raw_item(&c_view, 0, &raw_item, &raw_len) ==
+              NIPC_OK,
+          "cgroups_lookup raw response source item");
+    const uint8_t *c_items[] = { raw_item };
+    uint32_t c_short_lens[] = { NIPC_CGROUPS_LOOKUP_ITEM_HDR_SIZE - 1 };
+    CHECK(nipc_cgroups_lookup_raw_resp_encode(
+              c_items, c_short_lens, 1, 0, out, sizeof(out), &encoded_len) ==
+              NIPC_ERR_BAD_LAYOUT,
+          "cgroups_lookup raw response rejects short item");
+
+    uint8_t invalid_c_item[512];
+    CHECK(raw_len <= sizeof(invalid_c_item),
+          "cgroups_lookup raw item fits mutation buffer");
+    memcpy(invalid_c_item, raw_item, raw_len);
+    put16(invalid_c_item, 0, 99);
+    const uint8_t *invalid_c_items[] = { invalid_c_item };
+    uint32_t invalid_c_lens[] = { raw_len };
+    CHECK(nipc_cgroups_lookup_raw_resp_encode(
+              invalid_c_items, invalid_c_lens, 1, 0, out, sizeof(out),
+              &encoded_len) == NIPC_ERR_BAD_LAYOUT,
+          "cgroups_lookup raw response rejects invalid item");
+
+    uint32_t c_lens[] = { raw_len };
+    CHECK(nipc_cgroups_lookup_raw_resp_encode(
+              c_items, c_lens, 1, 0, out,
+              NIPC_CGROUPS_LOOKUP_RESP_HDR_SIZE + NIPC_LOOKUP_DIR_ENTRY_SIZE,
+              &encoded_len) == NIPC_ERR_OVERFLOW,
+          "cgroups_lookup raw response rejects too-small output");
+    CHECK(nipc_cgroups_lookup_raw_resp_encode(
+              c_items, c_lens, 1, 77, out, sizeof(out), &encoded_len) ==
+              NIPC_OK,
+          "cgroups_lookup raw response encodes valid item");
+    CHECK(nipc_cgroups_lookup_resp_decode(out, encoded_len, &c_view) ==
+              NIPC_OK &&
+              c_view.generation == 77 && c_view.item_count == 1,
+          "cgroups_lookup raw response valid output decodes");
 
     n = build_apps_lookup_host_root(buf, sizeof(buf));
     CHECK(n > 0, "build apps_lookup response for negative tests");
@@ -3335,6 +3406,109 @@ static void test_lookup_builder_semantic_error_paths(void) {
           "apps_lookup rejects bad label value");
 }
 
+static void test_lookup_payload_exceeded_suffix_paths(void) {
+    uint8_t buf[256];
+
+    uint32_t c_item_lens[] = {
+        NIPC_CGROUPS_LOOKUP_ITEM_HDR_SIZE + 4,
+        UINT32_MAX,
+    };
+    nipc_cgroups_lookup_builder_t cb;
+    nipc_cgroups_lookup_builder_init(&cb, buf, sizeof(buf), 2, 11);
+    nipc_cgroups_lookup_builder_set_payload_exceeded_item_lens(
+        &cb, c_item_lens, 2);
+    CHECK(nipc_cgroups_lookup_builder_add(
+              &cb, NIPC_CGROUP_LOOKUP_KNOWN, NIPC_ORCHESTRATOR_SYSTEMD,
+              "/slow", 5, "unit", 4, NULL, 0) == NIPC_OK,
+          "cgroups_lookup slow suffix path produces item-level overflow");
+    size_t n = nipc_cgroups_lookup_builder_finish(&cb);
+    nipc_cgroups_lookup_resp_view_t c_resp;
+    CHECK(nipc_cgroups_lookup_resp_decode(buf, n, &c_resp) == NIPC_OK,
+          "cgroups_lookup slow suffix response decodes");
+    nipc_cgroups_lookup_item_view_t c_item;
+    CHECK(nipc_cgroups_lookup_resp_item(&c_resp, 0, &c_item) == NIPC_OK &&
+              c_item.status == NIPC_CGROUP_LOOKUP_OVERSIZED_ITEM &&
+              str_eq(c_item.path, "/slow"),
+          "cgroups_lookup slow suffix marks oversized item");
+
+    uint32_t c_suffix_bytes[] = { UINT32_MAX, UINT32_MAX, 0 };
+    nipc_cgroups_lookup_builder_init(&cb, buf, sizeof(buf), 2, 12);
+    cb.payload_exceeded_suffix_bytes = c_suffix_bytes;
+    cb.payload_exceeded_item_lens_count = 2;
+    CHECK(nipc_cgroups_lookup_builder_add(
+              &cb, NIPC_CGROUP_LOOKUP_KNOWN, NIPC_ORCHESTRATOR_SYSTEMD,
+              "/fast", 5, "unit", 4, NULL, 0) == NIPC_OK,
+          "cgroups_lookup fast suffix path produces item-level overflow");
+    n = nipc_cgroups_lookup_builder_finish(&cb);
+    CHECK(nipc_cgroups_lookup_resp_decode(buf, n, &c_resp) == NIPC_OK,
+          "cgroups_lookup fast suffix response decodes");
+    CHECK(nipc_cgroups_lookup_resp_item(&c_resp, 0, &c_item) == NIPC_OK &&
+              c_item.status == NIPC_CGROUP_LOOKUP_OVERSIZED_ITEM &&
+              str_eq(c_item.path, "/fast"),
+          "cgroups_lookup fast suffix marks oversized item");
+
+    nipc_str_view_t paths[] = { sv("/request") };
+    uint8_t req_buf[128];
+    n = nipc_cgroups_lookup_req_encode(paths, 1, req_buf, sizeof(req_buf));
+    CHECK(n > 0, "cgroups_lookup suffix request encode");
+    nipc_cgroups_lookup_req_view_t req;
+    CHECK(nipc_cgroups_lookup_req_decode(req_buf, n, &req) == NIPC_OK,
+          "cgroups_lookup suffix request decode");
+    char bad_name[] = { 'a', '\0', 'b' };
+    nipc_cgroups_lookup_builder_init(&cb, buf, sizeof(buf), 1, 13);
+    CHECK(nipc_cgroups_lookup_builder_add_request_item(
+              &cb, NULL, 0, NIPC_CGROUP_LOOKUP_KNOWN,
+              NIPC_ORCHESTRATOR_SYSTEMD, "unit", 4, NULL, 0) ==
+              NIPC_ERR_BAD_LAYOUT,
+          "cgroups_lookup request-backed builder rejects null request");
+    nipc_cgroups_lookup_builder_init(&cb, buf, sizeof(buf), 1, 13);
+    CHECK(nipc_cgroups_lookup_builder_add_request_item(
+              &cb, &req, 0, NIPC_CGROUP_LOOKUP_KNOWN,
+              NIPC_ORCHESTRATOR_SYSTEMD, bad_name, sizeof(bad_name), NULL, 0) ==
+              NIPC_ERR_BAD_LAYOUT,
+          "cgroups_lookup request-backed builder validates raw name");
+
+    uint32_t a_item_lens[] = {
+        NIPC_APPS_LOOKUP_ITEM_HDR_SIZE + 3,
+        UINT32_MAX,
+    };
+    nipc_apps_lookup_builder_t ab;
+    nipc_apps_lookup_builder_init(&ab, buf, sizeof(buf), 2, 21);
+    nipc_apps_lookup_builder_set_payload_exceeded_item_lens(&ab, a_item_lens,
+                                                            2);
+    CHECK(nipc_apps_lookup_builder_add(
+              &ab, NIPC_PID_LOOKUP_KNOWN, NIPC_APPS_CGROUP_HOST_ROOT,
+              0, 123, 1, 1000, 1, "app", 3, "", 0, "", 0, NULL, 0) ==
+              NIPC_OK,
+          "apps_lookup slow suffix path produces item-level overflow");
+    n = nipc_apps_lookup_builder_finish(&ab);
+    nipc_apps_lookup_resp_view_t a_resp;
+    CHECK(nipc_apps_lookup_resp_decode(buf, n, &a_resp) == NIPC_OK,
+          "apps_lookup slow suffix response decodes");
+    nipc_apps_lookup_item_view_t a_item;
+    CHECK(nipc_apps_lookup_resp_item(&a_resp, 0, &a_item) == NIPC_OK &&
+              a_item.status == NIPC_PID_LOOKUP_OVERSIZED_ITEM &&
+              a_item.pid == 123,
+          "apps_lookup slow suffix marks oversized item");
+
+    uint32_t a_suffix_bytes[] = { UINT32_MAX, UINT32_MAX, 0 };
+    nipc_apps_lookup_builder_init(&ab, buf, sizeof(buf), 2, 22);
+    ab.payload_exceeded_suffix_bytes = a_suffix_bytes;
+    ab.payload_exceeded_item_lens_count = 2;
+    CHECK(nipc_apps_lookup_builder_add(
+              &ab, NIPC_PID_LOOKUP_KNOWN, NIPC_APPS_CGROUP_HOST_ROOT,
+              0, 456, 1, 1000, 1, "app", 3, "", 0, "", 0, NULL, 0) ==
+              NIPC_OK,
+          "apps_lookup fast suffix path produces item-level overflow");
+    n = nipc_apps_lookup_builder_finish(&ab);
+    CHECK(nipc_apps_lookup_resp_decode(buf, n, &a_resp) == NIPC_OK,
+          "apps_lookup fast suffix response decodes");
+    CHECK(nipc_apps_lookup_resp_item(&a_resp, 0, &a_item) == NIPC_OK &&
+              a_item.status == NIPC_PID_LOOKUP_OVERSIZED_ITEM &&
+              a_item.pid == 456,
+          "apps_lookup fast suffix marks oversized item");
+}
+
 static void test_lookup_finish_compaction_edge(void) {
     uint8_t buf[256];
     nipc_cgroups_lookup_builder_t cb;
@@ -3502,6 +3676,7 @@ int main(void) {
     test_lookup_req_encode_error_paths();
     test_lookup_public_helper_paths();
     test_lookup_builder_semantic_error_paths();
+    test_lookup_payload_exceeded_suffix_paths();
     test_lookup_finish_compaction_edge();
 
     /* Coverage gap tests: protocol error paths */

@@ -64,6 +64,15 @@ func TestLookupSyntheticArithmeticGuards(t *testing.T) {
 	if suffixBytes, ok := buildPayloadExceededSuffixBytes([]int{4, 4}); !ok || len(suffixBytes) != 3 || suffixBytes[0] != 12 || suffixBytes[1] != 4 || suffixBytes[2] != 0 {
 		t.Fatalf("suffix bytes = %v ok=%v, want [12 4 0] true", suffixBytes, ok)
 	}
+	if _, ok := checkedAddU32(^uint32(0), 1); ok {
+		t.Fatal("checkedAddU32 should reject overflow")
+	}
+	if _, ok := checkedAlign8U32(^uint32(0) - 3); ok {
+		t.Fatal("checkedAlign8U32 should reject overflow")
+	}
+	if !finishPayloadExceededSuffixBytes(nil) {
+		t.Fatal("empty payload-exceeded suffix should finalize")
+	}
 	if payloadExceededSuffixFits(16, 0, []uint32{1}, 0, 2) != true {
 		t.Fatal("mismatched suffix byte table should be treated as non-actionable")
 	}
@@ -1879,6 +1888,15 @@ func TestLookupThirtyTwoBitGuardCoverage(t *testing.T) {
 		t.Fatal("lookupDirOffset huge index should fail on 32-bit")
 	}
 
+	if _, err := BatchDirDecode(nil, overMaxInt, 0); !errors.Is(err, ErrBadItemCount) {
+		t.Fatalf("BatchDirDecode over int range = %v, want ErrBadItemCount", err)
+	}
+	if err := BatchDirValidate(nil, overMaxInt, 0); !errors.Is(err, ErrBadItemCount) {
+		t.Fatalf("BatchDirValidate over int range = %v, want ErrBadItemCount", err)
+	}
+	if _, err := BatchItemGet(make([]byte, LookupDirEntrySize), overMaxInt, 0); !errors.Is(err, ErrBadItemCount) {
+		t.Fatalf("BatchItemGet over int range = %v, want ErrBadItemCount", err)
+	}
 	if _, err := BatchDirDecode(nil, hugeLookupItems, 0); !errors.Is(err, ErrBadItemCount) {
 		t.Fatalf("BatchDirDecode huge item count = %v, want ErrBadItemCount", err)
 	}
@@ -1901,6 +1919,18 @@ func TestLookupThirtyTwoBitGuardCoverage(t *testing.T) {
 	if got := payloadExceededSuffixFits(0, 0, make([]uint32, 2), overMaxInt, 1); got {
 		t.Fatal("payloadExceededSuffixFits should reject unrepresentable first index")
 	}
+	if _, ok := makePayloadExceededSuffixBytes(overMaxInt); ok {
+		t.Fatal("makePayloadExceededSuffixBytes should reject unrepresentable item count")
+	}
+	if _, ok := stringReverseEncodedLen(maxIntValue()); ok {
+		t.Fatal("string reverse encoded length should reject int overflow")
+	}
+	expectPanic(t, "apps lookup builder huge maxItems", func() {
+		NewAppsLookupBuilder(nil, overMaxInt, 0)
+	})
+	expectPanic(t, "cgroups lookup builder huge maxItems", func() {
+		NewCgroupsLookupBuilder(nil, overMaxInt, 0)
+	})
 
 	appsReq := make([]byte, AppsLookupReqHdr)
 	ne.PutUint16(appsReq[0:2], 1)

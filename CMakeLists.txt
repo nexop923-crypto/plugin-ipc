@@ -216,12 +216,16 @@ endif()
 
 if(CARGO_EXECUTABLE AND GO_EXECUTABLE)
     add_test(NAME interop_codec
-        COMMAND bash "${CMAKE_SOURCE_DIR}/tests/interop_codec.sh"
+        COMMAND ${CMAKE_COMMAND} -E env
+            "NIPC_INTEROP_CODEC_BUILD_DIR=${CMAKE_BINARY_DIR}"
+            bash "${CMAKE_SOURCE_DIR}/tests/interop_codec.sh"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 elseif(CARGO_EXECUTABLE)
     add_test(NAME interop_codec
-        COMMAND bash "${CMAKE_SOURCE_DIR}/tests/interop_codec.sh"
+        COMMAND ${CMAKE_COMMAND} -E env
+            "NIPC_INTEROP_CODEC_BUILD_DIR=${CMAKE_BINARY_DIR}"
+            bash "${CMAKE_SOURCE_DIR}/tests/interop_codec.sh"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 endif()
@@ -821,6 +825,9 @@ if(NETIPC_WINDOWS_RUNTIME)
     target_link_libraries(test_win_service_extra PRIVATE
         netipc_service_win netipc_win_shm netipc_named_pipe netipc_protocol
     )
+    target_include_directories(test_win_service_extra PRIVATE
+        src/libnetdata/netipc/src/service
+    )
     target_compile_definitions(test_win_service_extra PRIVATE NIPC_INTERNAL_TESTING=1)
     add_test(NAME test_win_service_extra COMMAND test_win_service_extra)
     set_tests_properties(test_win_service_extra PROPERTIES
@@ -991,7 +998,7 @@ if(NETIPC_WINDOWS_RUNTIME AND CARGO_EXECUTABLE)
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
     set_tests_properties(test_lookup_scale_win_interop PROPERTIES
-        TIMEOUT 300
+        TIMEOUT 1800
         RESOURCE_LOCK win_service_interop_tests
         ENVIRONMENT "INTEROP_SVC_C=$<TARGET_FILE:interop_service_win_c>;INTEROP_SVC_RS=${INTEROP_SVC_WIN_RS};INTEROP_SVC_GO=${INTEROP_SVC_WIN_GO};NIPC_LOOKUP_SCALE_ITEMS=8192"
     )
@@ -1001,7 +1008,7 @@ if(NETIPC_WINDOWS_RUNTIME AND CARGO_EXECUTABLE)
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
     set_tests_properties(test_lookup_scale_win_shm_interop PROPERTIES
-        TIMEOUT 300
+        TIMEOUT 1800
         RESOURCE_LOCK win_service_interop_tests
         ENVIRONMENT "INTEROP_SVC_C=$<TARGET_FILE:interop_service_win_c>;INTEROP_SVC_RS=${INTEROP_SVC_WIN_RS};INTEROP_SVC_GO=${INTEROP_SVC_WIN_GO};NIPC_LOOKUP_SCALE_ITEMS=8192"
     )

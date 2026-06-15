@@ -68,3 +68,26 @@ func TestPrepareAcceptConfigWithoutWinShm(t *testing.T) {
 			cfg.MaxResponsePayloadBytes)
 	}
 }
+
+func TestPrepareAcceptConfigRejectsInvalidWinShmService(t *testing.T) {
+	cfg := windows.ServerConfig{
+		SupportedProfiles:       windows.WinShmProfileHybrid | windows.WinShmProfileBusywait,
+		PreferredProfiles:       windows.WinShmProfileHybrid | windows.WinShmProfileBusywait,
+		MaxRequestPayloadBytes:  101,
+		MaxResponsePayloadBytes: 202,
+	}
+	server := NewServer("run", "bad/name", cfg, protocol.MethodIncrement, nil)
+
+	sessionID, acceptCfg, prepared, ok := server.prepareAcceptConfig()
+	if ok || prepared != nil {
+		t.Fatalf("prepareAcceptConfig = ok %v prepared %v, want false/nil", ok, prepared)
+	}
+	if sessionID != 1 {
+		t.Fatalf("session id = %d, want 1", sessionID)
+	}
+	if acceptCfg.SupportedProfiles != 0 || acceptCfg.PreferredProfiles != 0 {
+		t.Fatalf("profiles = supported 0x%x preferred 0x%x, want both zero",
+			acceptCfg.SupportedProfiles,
+			acceptCfg.PreferredProfiles)
+	}
+}

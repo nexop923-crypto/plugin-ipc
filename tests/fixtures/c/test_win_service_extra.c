@@ -11,6 +11,7 @@
 #include "netipc/netipc_protocol.h"
 #include "netipc/netipc_service.h"
 #include "netipc/netipc_win_shm.h"
+#include "netipc_service_common.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -60,6 +61,78 @@ static int should_run_test(const char *name)
         if (should_run_test(#fn))                                            \
             fn();                                                            \
     } while (0)
+
+typedef struct {
+    nipc_error_t results[4];
+    int result_count;
+    int calls;
+    int disconnects;
+    int reconnects;
+    int sleeps;
+    bool reconnect_ok;
+    uint32_t reconnect_request_bytes;
+    uint32_t reconnect_response_bytes;
+} common_retry_mock_t;
+
+static common_retry_mock_t *g_common_retry_mock;
+
+static nipc_error_t common_retry_attempt(nipc_client_ctx_t *ctx, void *state)
+{
+    (void)ctx;
+    common_retry_mock_t *mock = (common_retry_mock_t *)state;
+    mock->calls++;
+    if (mock->calls <= mock->result_count)
+        return mock->results[mock->calls - 1];
+    return NIPC_OK;
+}
+
+static void common_retry_disconnect(nipc_client_ctx_t *ctx)
+{
+    (void)ctx;
+    if (g_common_retry_mock)
+        g_common_retry_mock->disconnects++;
+}
+
+static nipc_client_state_t common_retry_try_connect(nipc_client_ctx_t *ctx)
+{
+    (void)ctx;
+    return NIPC_CLIENT_READY;
+}
+
+static bool common_retry_reconnect_for_call(nipc_client_ctx_t *ctx)
+{
+    if (g_common_retry_mock) {
+        g_common_retry_mock->reconnects++;
+        if (g_common_retry_mock->reconnect_request_bytes != 0)
+            ctx->session.max_request_payload_bytes =
+                g_common_retry_mock->reconnect_request_bytes;
+        if (g_common_retry_mock->reconnect_response_bytes != 0)
+            ctx->session.max_response_payload_bytes =
+                g_common_retry_mock->reconnect_response_bytes;
+        ctx->state = NIPC_CLIENT_READY;
+        return g_common_retry_mock->reconnect_ok;
+    }
+    return false;
+}
+
+static void common_retry_sleep(uint32_t ms)
+{
+    (void)ms;
+    if (g_common_retry_mock)
+        g_common_retry_mock->sleeps++;
+}
+
+static nipc_service_common_client_ops_t common_retry_ops(void)
+{
+    return (nipc_service_common_client_ops_t){
+        .disconnect = common_retry_disconnect,
+        .try_connect = common_retry_try_connect,
+        .reconnect_for_call = common_retry_reconnect_for_call,
+        .sleep_ms = common_retry_sleep,
+        .reconnect_drain_ms = 1,
+        .reconnect_retry_interval_ms = 1,
+    };
+}
 
 static void unique_service(char *buf, size_t len, const char *prefix)
 {
@@ -1022,6 +1095,81 @@ static bool cgroups_lookup_duplicate_response_handler(
            nipc_cgroups_lookup_builder_add(
                builder, NIPC_CGROUP_LOOKUP_UNKNOWN_RETRY_LATER, 0,
                first.path.ptr, first.path.len, "", 0, NULL, 0) == NIPC_OK;
+}
+
+static bool corrupt_lookup_builder_item_u16(uint8_t *buf,
+                                            size_t buf_len,
+                                            size_t response_header_size,
+                                            uint32_t item_index,
+                                            size_t item_offset,
+                                            uint16_t value);
+
+static bool cgroups_lookup_invalid_payload_suffix_handler(
+        void *user,
+        const nipc_cgroups_lookup_req_view_t *request,
+        nipc_cgroups_lookup_builder_t *builder)
+{
+    (void)user;
+
+    if (request->item_count < 3)
+        return false;
+
+    for (uint32_t i = 0; i < request->item_count; i++) {
+        nipc_cgroups_lookup_req_item_t req_item;
+        if (nipc_cgroups_lookup_req_item(request, i, &req_item) != NIPC_OK)
+            return false;
+
+        uint16_t status = NIPC_CGROUP_LOOKUP_PAYLOAD_EXCEEDED;
+        uint16_t orchestrator = 0;
+        const char *name = "";
+        uint32_t name_len = 0;
+        if (i == 0) {
+            status = NIPC_CGROUP_LOOKUP_KNOWN;
+            orchestrator = NIPC_ORCHESTRATOR_K8S;
+            name = "ok";
+            name_len = 2;
+        } else if (i == 2) {
+            status = NIPC_CGROUP_LOOKUP_UNKNOWN_RETRY_LATER;
+        }
+
+        if (nipc_cgroups_lookup_builder_add(
+                builder, status, orchestrator, req_item.path.ptr,
+                req_item.path.len, name, name_len, NULL, 0) != NIPC_OK)
+            return false;
+    }
+
+    return true;
+}
+
+static bool cgroups_lookup_malformed_payload_suffix_handler(
+        void *user,
+        const nipc_cgroups_lookup_req_view_t *request,
+        nipc_cgroups_lookup_builder_t *builder)
+{
+    (void)user;
+
+    if (request->item_count < 3)
+        return false;
+
+    for (uint32_t i = 0; i < request->item_count; i++) {
+        nipc_cgroups_lookup_req_item_t req_item;
+        if (nipc_cgroups_lookup_req_item(request, i, &req_item) != NIPC_OK)
+            return false;
+
+        uint16_t status = i == 0 ? NIPC_CGROUP_LOOKUP_KNOWN :
+                                   NIPC_CGROUP_LOOKUP_PAYLOAD_EXCEEDED;
+        uint16_t orchestrator = i == 0 ? NIPC_ORCHESTRATOR_K8S : 0;
+        const char *name = i == 0 ? "ok" : "";
+        uint32_t name_len = i == 0 ? 2 : 0;
+        if (nipc_cgroups_lookup_builder_add(
+                builder, status, orchestrator, req_item.path.ptr,
+                req_item.path.len, name, name_len, NULL, 0) != NIPC_OK)
+            return false;
+    }
+
+    return corrupt_lookup_builder_item_u16(
+        builder->buf, builder->buf_len, NIPC_CGROUPS_LOOKUP_RESP_HDR_SIZE,
+        2, 2, 0xffff);
 }
 
 static bool apps_lookup_wrong_echo_handler(
@@ -2694,6 +2842,49 @@ static void run_cgroups_lookup_bad_response_case(
     stop_lookup_server_drain(&sctx, server_thread);
 }
 
+static void run_cgroups_lookup_bad_suffix_case(
+        const char *suffix,
+        nipc_cgroups_lookup_handler_fn handler,
+        nipc_error_t expected_err)
+{
+    char service[64];
+    char label[128];
+    snprintf(label, sizeof(label), "svc_cgroups_lookup_bad_suffix_%s", suffix);
+    unique_service(service, sizeof(service), label);
+
+    lookup_server_thread_ctx_t sctx;
+    nipc_server_config_t scfg = default_typed_server_config();
+    nipc_cgroups_lookup_service_handler_t service_handler = {
+        .handle = handler,
+        .user = NULL,
+    };
+    HANDLE server_thread = start_lookup_server_named(
+        &sctx, service, LOOKUP_SERVER_CGROUPS, &scfg, &service_handler, NULL);
+    if (!server_thread)
+        return;
+
+    nipc_client_ctx_t client;
+    nipc_client_config_t ccfg = default_client_config();
+    nipc_client_init(&client, TEST_RUN_DIR, service, &ccfg);
+    check("cgroups malformed payload suffix client ready",
+          refresh_until_ready(&client, 100, 10));
+
+    nipc_str_view_t paths[] = {
+        { .ptr = "/a", .len = 2 },
+        { .ptr = "/b", .len = 2 },
+        { .ptr = "/c", .len = 2 },
+    };
+    nipc_cgroups_lookup_resp_view_t view;
+    nipc_error_t err = nipc_client_call_cgroups_lookup(&client, paths, 3,
+                                                       &view);
+    snprintf(label, sizeof(label), "cgroups rejects %s payload suffix",
+             suffix);
+    check(label, err == expected_err);
+
+    nipc_client_close(&client);
+    stop_lookup_server_drain(&sctx, server_thread);
+}
+
 static void run_apps_lookup_bad_response_case(
         const char *suffix,
         nipc_apps_lookup_handler_fn handler,
@@ -2753,6 +2944,12 @@ static void test_lookup_rejects_malformed_first_response(void)
     run_cgroups_lookup_bad_response_case("invalid_label_table",
                                          cgroups_lookup_invalid_label_table_handler,
                                          NIPC_ERR_OUT_OF_BOUNDS);
+    run_cgroups_lookup_bad_suffix_case("wrong_marker",
+                                       cgroups_lookup_invalid_payload_suffix_handler,
+                                       NIPC_ERR_BAD_LAYOUT);
+    run_cgroups_lookup_bad_suffix_case("malformed_marker",
+                                       cgroups_lookup_malformed_payload_suffix_handler,
+                                       NIPC_ERR_BAD_LAYOUT);
 
     run_apps_lookup_bad_response_case("wrong_echo",
                                       apps_lookup_wrong_echo_handler,
@@ -3362,6 +3559,7 @@ static void test_lookup_init_and_client_guards(void)
         char service[64];
         unique_service(service, sizeof(service), "svc_lookup_init_cgroups");
         nipc_server_config_t zero_cfg = scfg;
+        zero_cfg.max_request_payload_bytes = 0;
         zero_cfg.max_response_payload_bytes = 0;
         nipc_cgroups_lookup_service_handler_t handler = {
             .handle = cgroups_lookup_test_handler,
@@ -3382,6 +3580,7 @@ static void test_lookup_init_and_client_guards(void)
         char service[64];
         unique_service(service, sizeof(service), "svc_lookup_init_apps");
         nipc_server_config_t zero_cfg = scfg;
+        zero_cfg.max_request_payload_bytes = 0;
         zero_cfg.max_response_payload_bytes = 0;
         nipc_apps_lookup_service_handler_t handler = {
             .handle = apps_lookup_test_handler,
@@ -3410,6 +3609,30 @@ static void test_lookup_init_and_client_guards(void)
         check("cgroups lookup init accepts null config defaults", err == NIPC_OK);
         if (err == NIPC_OK)
             nipc_server_destroy(&server);
+    }
+
+    {
+        nipc_cgroups_lookup_service_handler_t handler = {
+            .handle = cgroups_lookup_test_handler,
+            .user = NULL,
+        };
+        nipc_error_t err = nipc_server_init_cgroups_lookup(
+            &server, TEST_RUN_DIR, "svc/cgroups_lookup_bad_name", &scfg, 1,
+            &handler);
+        check("cgroups lookup init propagates raw init error",
+              err == NIPC_ERR_BAD_LAYOUT);
+    }
+
+    {
+        nipc_apps_lookup_service_handler_t handler = {
+            .handle = apps_lookup_test_handler,
+            .user = NULL,
+        };
+        nipc_error_t err = nipc_server_init_apps_lookup(
+            &server, TEST_RUN_DIR, "svc/apps_lookup_bad_name", &scfg, 1,
+            &handler);
+        check("apps lookup init propagates raw init error",
+              err == NIPC_ERR_BAD_LAYOUT);
     }
 
     {
@@ -3971,18 +4194,596 @@ static void test_cache_fault_injection(void)
     }
 }
 
+static void test_common_helper_edges(void)
+{
+    printf("--- Common service helper edge paths ---\n");
+
+    char tiny[4];
+    nipc_service_common_copy_cstr_field(NULL, 4, "abc");
+    nipc_service_common_copy_cstr_field(tiny, 0, "abc");
+    nipc_service_common_copy_cstr_field(tiny, sizeof(tiny), NULL);
+    check("copy helper handles null source", tiny[0] == '\0');
+
+    nipc_service_common_transport_fields_t fields;
+    check("client transport fields reject null config",
+          !nipc_service_common_client_transport_fields(&fields, NULL));
+    check("server transport fields reject null config",
+          !nipc_service_common_server_transport_fields(&fields, NULL));
+
+    nipc_client_ctx_t client;
+    memset(&client, 0, sizeof(client));
+    check("default call timeout fallback",
+          nipc_service_common_client_call_timeout_ms(&client, 0) ==
+              NIPC_CLIENT_CALL_TIMEOUT_DEFAULT_MS);
+
+    client.transport_config.max_request_payload_bytes = 1;
+    nipc_service_common_client_note_request_capacity(
+        &client, NIPC_MAX_PAYLOAD_CAP + 1u);
+    check("request capacity note clamps to protocol cap",
+          client.transport_config.max_request_payload_bytes ==
+              NIPC_MAX_PAYLOAD_CAP);
+    client.transport_config.max_response_payload_bytes = 1;
+    nipc_service_common_client_note_response_capacity(
+        &client, NIPC_MAX_PAYLOAD_CAP + 1u);
+    check("response capacity note clamps to protocol cap",
+          client.transport_config.max_response_payload_bytes ==
+              NIPC_MAX_PAYLOAD_CAP);
+
+    uint8_t payload[] = {1, 2, 3, 4};
+    uint8_t msg_buf[128];
+    uint8_t *msg = NULL;
+    size_t msg_len = 0;
+    nipc_header_t hdr = {0};
+    client.session.max_request_payload_bytes = 2;
+    client.send_buf = msg_buf;
+    client.send_buf_size = sizeof(msg_buf);
+    check("prepare shm request rejects negotiated overflow",
+          nipc_service_common_client_prepare_shm_request(
+              &client, &hdr, payload, sizeof(payload), &msg, &msg_len) ==
+              NIPC_ERR_OVERFLOW);
+    client.session.max_request_payload_bytes = sizeof(payload);
+    client.send_buf = NULL;
+    client.send_buf_size = 0;
+    check("prepare shm request rejects missing send buffer",
+          nipc_service_common_client_prepare_shm_request(
+              &client, &hdr, payload, sizeof(payload), &msg, &msg_len) ==
+              NIPC_ERR_OVERFLOW);
+    client.send_buf = msg_buf;
+    client.send_buf_size = sizeof(msg_buf);
+    check("prepare shm request succeeds",
+          nipc_service_common_client_prepare_shm_request(
+              &client, &hdr, payload, sizeof(payload), &msg, &msg_len) ==
+              NIPC_OK &&
+              msg == msg_buf &&
+              msg_len == NIPC_HEADER_LEN + sizeof(payload));
+
+    const void *resp_payload = NULL;
+    size_t resp_len = 0;
+    check("parse shm response rejects short message",
+          nipc_service_common_client_parse_shm_response(
+              msg_buf, NIPC_HEADER_LEN - 1, &hdr, &resp_payload, &resp_len) ==
+              NIPC_ERR_TRUNCATED);
+    memset(msg_buf, 0, sizeof(msg_buf));
+    check("parse shm response rejects bad header",
+          nipc_service_common_client_parse_shm_response(
+              msg_buf, NIPC_HEADER_LEN, &hdr, &resp_payload, &resp_len) !=
+              NIPC_OK);
+
+    nipc_header_t resp_hdr = {.transport_status = NIPC_STATUS_LIMIT_EXCEEDED};
+    client.session.max_response_payload_bytes = 128;
+    client.transport_config.max_response_payload_bytes = 0;
+    check("limit status maps to overflow and grows response capacity",
+          nipc_service_common_response_status_to_error(&client, &resp_hdr) ==
+              NIPC_ERR_OVERFLOW &&
+              client.transport_config.max_response_payload_bytes == 256);
+    resp_hdr.transport_status = NIPC_STATUS_UNSUPPORTED;
+    check("unsupported status maps to bad layout",
+          nipc_service_common_response_status_to_error(&client, &resp_hdr) ==
+              NIPC_ERR_BAD_LAYOUT);
+    resp_hdr.transport_status = NIPC_STATUS_INTERNAL_ERROR;
+    check("internal-error status maps to bad layout",
+          nipc_service_common_response_status_to_error(&client, &resp_hdr) ==
+              NIPC_ERR_BAD_LAYOUT);
+
+    nipc_header_t req_hdr = {
+        .flags = NIPC_FLAG_BATCH,
+        .item_count = 2,
+        .code = NIPC_METHOD_INCREMENT,
+        .message_id = 77,
+    };
+    nipc_service_common_prepare_response_header(&req_hdr, &resp_hdr);
+    check("response header preserves batch metadata",
+          resp_hdr.flags == NIPC_FLAG_BATCH && resp_hdr.item_count == 2 &&
+              resp_hdr.code == NIPC_METHOD_INCREMENT &&
+              resp_hdr.message_id == 77);
+    req_hdr.flags = 0;
+    req_hdr.item_count = 0;
+    nipc_service_common_prepare_response_header(&req_hdr, &resp_hdr);
+    check("response header defaults to single response",
+          resp_hdr.flags == 0 && resp_hdr.item_count == 1);
+
+    nipc_managed_server_t server;
+    memset(&server, 0, sizeof(server));
+    server.learned_response_payload_bytes = 64;
+    server.response_payload_growth_ceiling = 512;
+    size_t response_len = 32;
+    bool close_after_response = true;
+    nipc_service_common_apply_dispatch_result(
+        &server, NIPC_OK, 64, 64, true, &resp_hdr, &response_len,
+        &close_after_response);
+    check("dispatch ok keeps response open",
+          resp_hdr.transport_status == NIPC_STATUS_OK &&
+              !close_after_response && response_len == 32);
+    response_len = 128;
+    nipc_service_common_apply_dispatch_result(
+        &server, NIPC_OK, 64, 64, true, &resp_hdr, &response_len,
+        &close_after_response);
+    check("dispatch oversized response returns limit exceeded",
+          resp_hdr.transport_status == NIPC_STATUS_LIMIT_EXCEEDED &&
+              close_after_response && response_len == 0);
+    response_len = 16;
+    nipc_service_common_apply_dispatch_result(
+        &server, NIPC_ERR_BAD_LAYOUT, 64, 64, true, &resp_hdr, &response_len,
+        &close_after_response);
+    check("dispatch bad layout returns bad envelope",
+          resp_hdr.transport_status == NIPC_STATUS_BAD_ENVELOPE &&
+              close_after_response && response_len == 0);
+    response_len = 16;
+    nipc_service_common_apply_dispatch_result(
+        &server, NIPC_ERR_HANDLER_FAILED, 64, 64, true, &resp_hdr,
+        &response_len, &close_after_response);
+    check("dispatch handler failure returns internal error",
+          resp_hdr.transport_status == NIPC_STATUS_INTERNAL_ERROR &&
+              close_after_response && response_len == 0);
+
+    common_retry_mock_t mock = {0};
+    nipc_service_common_client_ops_t ops = common_retry_ops();
+    g_common_retry_mock = &mock;
+
+    memset(&client, 0, sizeof(client));
+    check("retry helper rejects not-ready client",
+          nipc_service_common_call_with_retry(
+              &client, common_retry_attempt, &mock, &ops) ==
+              NIPC_ERR_NOT_READY &&
+              client.error_count == 1);
+
+    memset(&client, 0, sizeof(client));
+    memset(&mock, 0, sizeof(mock));
+    client.state = NIPC_CLIENT_READY;
+    mock.results[0] = NIPC_OK;
+    mock.result_count = 1;
+    check("retry helper counts successful call",
+          nipc_service_common_call_with_retry(
+              &client, common_retry_attempt, &mock, &ops) == NIPC_OK &&
+              client.call_count == 1);
+
+    memset(&client, 0, sizeof(client));
+    memset(&mock, 0, sizeof(mock));
+    client.state = NIPC_CLIENT_READY;
+    mock.results[0] = NIPC_ERR_TIMEOUT;
+    mock.result_count = 1;
+    check("retry helper breaks client on timeout",
+          nipc_service_common_call_with_retry(
+              &client, common_retry_attempt, &mock, &ops) ==
+              NIPC_ERR_TIMEOUT &&
+              client.state == NIPC_CLIENT_BROKEN && client.error_count == 1 &&
+              mock.disconnects == 1);
+
+    memset(&client, 0, sizeof(client));
+    memset(&mock, 0, sizeof(mock));
+    client.state = NIPC_CLIENT_READY;
+    mock.results[0] = NIPC_ERR_BAD_LAYOUT;
+    mock.results[1] = NIPC_OK;
+    mock.result_count = 2;
+    mock.reconnect_ok = true;
+    check("retry helper retries one non-overflow failure",
+          nipc_service_common_call_with_retry(
+              &client, common_retry_attempt, &mock, &ops) == NIPC_OK &&
+              client.call_count == 1 && client.reconnect_count == 1 &&
+              mock.sleeps >= 1);
+
+    memset(&client, 0, sizeof(client));
+    memset(&mock, 0, sizeof(mock));
+    client.state = NIPC_CLIENT_READY;
+    mock.results[0] = NIPC_ERR_OVERFLOW;
+    mock.result_count = 1;
+    mock.reconnect_ok = true;
+    check("retry helper rejects overflow without learned growth",
+          nipc_service_common_call_with_retry(
+              &client, common_retry_attempt, &mock, &ops) ==
+              NIPC_ERR_OVERFLOW &&
+              client.state == NIPC_CLIENT_BROKEN && client.error_count == 1);
+
+    memset(&client, 0, sizeof(client));
+    memset(&mock, 0, sizeof(mock));
+    client.state = NIPC_CLIENT_READY;
+    client.session.max_request_payload_bytes = 16;
+    client.transport_config.max_request_payload_bytes = 64;
+    mock.results[0] = NIPC_ERR_OVERFLOW;
+    mock.results[1] = NIPC_OK;
+    mock.result_count = 2;
+    mock.reconnect_ok = true;
+    mock.reconnect_request_bytes = 64;
+    check("retry helper accepts overflow after learned growth",
+          nipc_service_common_call_with_retry(
+              &client, common_retry_attempt, &mock, &ops) == NIPC_OK &&
+              client.call_count == 1 && client.reconnect_count == 1);
+
+    memset(&client, 0, sizeof(client));
+    client.state = NIPC_CLIENT_READY;
+    __atomic_store_n(&client.abort_requested, 1u, __ATOMIC_RELEASE);
+    check("ensure request capacity honors abort",
+          nipc_service_common_client_ensure_request_capacity(
+              &client, 16, &ops) == NIPC_ERR_ABORTED &&
+              client.state == NIPC_CLIENT_BROKEN);
+
+    memset(&client, 0, sizeof(client));
+    client.state = NIPC_CLIENT_READY;
+    check("ensure request capacity rejects impossible size",
+          nipc_service_common_client_ensure_request_capacity(
+              &client, (size_t)UINT32_MAX + 1u, &ops) ==
+              NIPC_ERR_OVERFLOW);
+
+    memset(&client, 0, sizeof(client));
+    client.state = NIPC_CLIENT_READY;
+    client.session.max_request_payload_bytes = 32;
+    check("ensure request capacity accepts current session cap",
+          nipc_service_common_client_ensure_request_capacity(
+              &client, 16, &ops) == NIPC_OK);
+
+    memset(&client, 0, sizeof(client));
+    client.state = NIPC_CLIENT_READY;
+    client.session.max_request_payload_bytes = 16;
+    client.transport_config.max_request_payload_bytes = 32;
+    check("ensure request capacity rejects configured cap",
+          nipc_service_common_client_ensure_request_capacity(
+              &client, 64, &ops) == NIPC_ERR_OVERFLOW);
+
+    memset(&client, 0, sizeof(client));
+    memset(&mock, 0, sizeof(mock));
+    client.state = NIPC_CLIENT_READY;
+    client.session.max_request_payload_bytes = 16;
+    client.transport_config.max_request_payload_bytes = 64;
+    mock.reconnect_ok = true;
+    mock.reconnect_request_bytes = 64;
+    check("ensure request capacity reconnects for learned cap",
+          nipc_service_common_client_ensure_request_capacity(
+              &client, 64, &ops) == NIPC_OK &&
+              client.reconnect_count == 1);
+
+    g_common_retry_mock = NULL;
+}
+
+static void test_lookup_client_preflight_edges(void)
+{
+    printf("--- Typed lookup client preflight edge paths ---\n");
+
+    nipc_client_ctx_t client;
+    nipc_client_init(&client, TEST_RUN_DIR, "svc_lookup_preflight", NULL);
+    client.state = NIPC_CLIENT_READY;
+    client.max_logical_lookup_items = 8;
+    client.max_logical_lookup_subcalls = 8;
+    client.max_logical_lookup_response_bytes = 4096;
+
+    nipc_apps_lookup_resp_view_t apps_view;
+    uint32_t pid = 1234;
+    check("apps lookup rejects null pid array before transport",
+          nipc_client_call_apps_lookup(&client, NULL, 1, &apps_view) ==
+              NIPC_ERR_BAD_LAYOUT);
+    __atomic_store_n(&client.abort_requested, 1u, __ATOMIC_RELEASE);
+    check("apps lookup preflight honors abort",
+          nipc_client_call_apps_lookup(&client, &pid, 1, &apps_view) ==
+              NIPC_ERR_ABORTED);
+    __atomic_store_n(&client.abort_requested, 0u, __ATOMIC_RELEASE);
+    client.session.max_request_payload_bytes = 0;
+    client.transport_config.max_request_payload_bytes = 0;
+    check("apps lookup falls back to default request cap before transport",
+          nipc_client_call_apps_lookup(&client, &pid, 1, &apps_view) !=
+              NIPC_OK);
+    client.state = NIPC_CLIENT_READY;
+    client.session.max_request_payload_bytes = 1;
+    client.transport_config.max_request_payload_bytes = 1;
+    check("apps lookup rejects request cap too small before transport",
+          nipc_client_call_apps_lookup(&client, &pid, 1, &apps_view) ==
+              NIPC_ERR_OVERFLOW);
+
+    nipc_cgroups_lookup_resp_view_t cgroups_view;
+    nipc_str_view_t path = {.ptr = "/ok", .len = 3};
+    client.session.max_request_payload_bytes = 4096;
+    client.transport_config.max_request_payload_bytes = 4096;
+    check("cgroups lookup rejects null path array before transport",
+          nipc_client_call_cgroups_lookup(&client, NULL, 1, &cgroups_view) ==
+              NIPC_ERR_BAD_LAYOUT);
+    client.max_logical_lookup_items = 0;
+    check("cgroups lookup rejects logical item limit before transport",
+          nipc_client_call_cgroups_lookup(&client, &path, 1, &cgroups_view) ==
+              NIPC_ERR_OVERFLOW);
+    client.max_logical_lookup_items = 8;
+    __atomic_store_n(&client.abort_requested, 1u, __ATOMIC_RELEASE);
+    check("cgroups lookup preflight honors abort",
+          nipc_client_call_cgroups_lookup(&client, &path, 1, &cgroups_view) ==
+              NIPC_ERR_ABORTED);
+    __atomic_store_n(&client.abort_requested, 0u, __ATOMIC_RELEASE);
+    client.session.max_request_payload_bytes = 0;
+    client.transport_config.max_request_payload_bytes = 0;
+    check("cgroups lookup falls back to default request cap before transport",
+          nipc_client_call_cgroups_lookup(&client, &path, 1, &cgroups_view) !=
+              NIPC_OK);
+    client.state = NIPC_CLIENT_READY;
+    client.session.max_request_payload_bytes = 1;
+    client.transport_config.max_request_payload_bytes = 1;
+    nipc_error_t err =
+        nipc_client_call_cgroups_lookup(&client, &path, 1, &cgroups_view);
+    check("cgroups oversized request-key preflight fails without server",
+          err != NIPC_OK);
+
+    nipc_client_close(&client);
+
+}
+
+static void test_lookup_request_capacity_reconnect_edges(void)
+{
+    printf("--- Typed lookup request-capacity reconnect edges ---\n");
+
+    char service[64];
+    unique_service(service, sizeof(service), "svc_apps_lookup_reqcap_reconnect");
+    lookup_scale_state_t apps_state = {0};
+    lookup_server_thread_ctx_t sctx;
+    nipc_server_config_t scfg = default_typed_server_config();
+    nipc_apps_lookup_service_handler_t apps_handler = {
+        .handle = apps_lookup_scale_handler,
+        .user = &apps_state,
+    };
+    HANDLE server_thread = start_lookup_server_named(
+        &sctx, service, LOOKUP_SERVER_APPS, &scfg, NULL, &apps_handler);
+    if (!server_thread)
+        return;
+
+    nipc_client_ctx_t client;
+    nipc_client_config_t ccfg = default_client_config();
+    nipc_client_init(&client, TEST_RUN_DIR, service, &ccfg);
+    check("apps reqcap reconnect client ready",
+          refresh_until_ready(&client, 100, 10));
+    nipc_client_clear_abort(&client);
+    client.session.max_request_payload_bytes = 1;
+    uint32_t pid = 1234;
+    nipc_apps_lookup_resp_view_t apps_view;
+    nipc_error_t err =
+        nipc_client_call_apps_lookup(&client, &pid, 1, &apps_view);
+    nipc_client_status_t status;
+    nipc_client_status(&client, &status);
+    check("apps reqcap reconnect call ok", err == NIPC_OK);
+    check("apps reqcap reconnect happened", status.reconnect_count >= 1);
+    nipc_client_close(&client);
+    stop_lookup_server_drain(&sctx, server_thread);
+
+    unique_service(service, sizeof(service), "svc_cgroups_lookup_reqcap_reconnect");
+    lookup_scale_state_t cgroups_state = {0};
+    nipc_server_config_t cgroups_scfg = default_typed_server_config();
+    nipc_cgroups_lookup_service_handler_t cgroups_handler = {
+        .handle = cgroups_lookup_scale_handler,
+        .user = &cgroups_state,
+    };
+    server_thread = start_lookup_server_named(
+        &sctx, service, LOOKUP_SERVER_CGROUPS, &cgroups_scfg, &cgroups_handler, NULL);
+    if (!server_thread)
+        return;
+
+    nipc_client_config_t cgroups_ccfg = default_client_config();
+    nipc_client_init(&client, TEST_RUN_DIR, service, &cgroups_ccfg);
+    check("cgroups reqcap reconnect client ready",
+          refresh_until_ready(&client, 100, 10));
+    nipc_client_clear_abort(&client);
+    client.session.max_request_payload_bytes = 1;
+    nipc_str_view_t path = {.ptr = "/ok", .len = 3};
+    nipc_cgroups_lookup_resp_view_t cgroups_view;
+    err = nipc_client_call_cgroups_lookup(&client, &path, 1, &cgroups_view);
+    nipc_client_status(&client, &status);
+    check("cgroups reqcap reconnect call ok", err == NIPC_OK);
+    check("cgroups reqcap reconnect happened", status.reconnect_count >= 1);
+    nipc_client_close(&client);
+    stop_lookup_server_drain(&sctx, server_thread);
+}
+
+static void test_lookup_request_capacity_failure_edges(void)
+{
+    printf("--- Typed lookup request-capacity failure edges ---\n");
+
+    nipc_client_ctx_t client;
+    nipc_apps_lookup_resp_view_t apps_view;
+    nipc_cgroups_lookup_resp_view_t cgroups_view;
+
+    nipc_client_init(&client, TEST_RUN_DIR, "svc_missing_apps_reqcap", NULL);
+    client.state = NIPC_CLIENT_READY;
+    client.max_logical_lookup_items = 8;
+    client.max_logical_lookup_subcalls = 8;
+    client.max_logical_lookup_response_bytes = 4096;
+    client.session.max_request_payload_bytes = 1;
+    client.transport_config.max_request_payload_bytes = 4096;
+    uint32_t pid = 1234;
+    check("apps request-capacity reconnect failure rejected",
+          nipc_client_call_apps_lookup_timeout(&client, &pid, 1, &apps_view,
+                                               1000) == NIPC_ERR_OVERFLOW);
+    nipc_client_close(&client);
+
+    nipc_client_init(&client, TEST_RUN_DIR, "svc_missing_cgroups_reqcap", NULL);
+    client.state = NIPC_CLIENT_READY;
+    client.max_logical_lookup_items = 8;
+    client.max_logical_lookup_subcalls = 8;
+    client.max_logical_lookup_response_bytes = 4096;
+    client.session.max_request_payload_bytes = 1;
+    client.transport_config.max_request_payload_bytes = 4096;
+    nipc_str_view_t path = {.ptr = "/ok", .len = 3};
+    check("cgroups request-capacity reconnect failure rejected",
+          nipc_client_call_cgroups_lookup_timeout(&client, &path, 1,
+                                                  &cgroups_view, 1000) ==
+              NIPC_ERR_OVERFLOW);
+    nipc_client_close(&client);
+
+    nipc_client_init(&client, TEST_RUN_DIR, "svc_synthetic_cgroups_oversized", NULL);
+    client.state = NIPC_CLIENT_READY;
+    client.max_logical_lookup_items = 8;
+    client.max_logical_lookup_subcalls = 8;
+    client.max_logical_lookup_response_bytes = 4096;
+    client.session.max_request_payload_bytes = 1;
+    client.transport_config.max_request_payload_bytes = 1;
+    nipc_str_view_t bad_path = {.ptr = NULL, .len = 1};
+    check("cgroups oversized request item rejects bad path",
+          nipc_client_call_cgroups_lookup(&client, &bad_path, 1,
+                                          &cgroups_view) ==
+              NIPC_ERR_BAD_LAYOUT);
+    nipc_client_close(&client);
+}
+
+static void test_lookup_stitched_response_buffer_fault_edges(void)
+{
+    printf("--- Typed lookup stitched-response buffer fault edges ---\n");
+
+    {
+        char service[64];
+        unique_service(service, sizeof(service),
+                       "svc_apps_lookup_stitched_resp_fault");
+
+        lookup_scale_state_t state = {0};
+        lookup_server_thread_ctx_t sctx;
+        nipc_server_config_t scfg = default_typed_server_config();
+        scfg.max_response_payload_bytes = 1200;
+        nipc_apps_lookup_service_handler_t handler = {
+            .handle = apps_lookup_response_split_handler,
+            .user = &state,
+        };
+        HANDLE server_thread = start_lookup_server_named(
+            &sctx, service, LOOKUP_SERVER_APPS, &scfg, NULL, &handler);
+        if (!server_thread)
+            return;
+
+        nipc_client_ctx_t client;
+        nipc_client_config_t ccfg = default_client_config();
+        ccfg.max_response_payload_bytes = 1200;
+        nipc_client_init(&client, TEST_RUN_DIR, service, &ccfg);
+        check("apps stitched-response fault client ready",
+              refresh_until_ready(&client, 100, 10));
+
+        uint32_t pids[] = {1, 2, 3, 4};
+        nipc_apps_lookup_resp_view_t view;
+        nipc_win_service_test_fault_set(
+            NIPC_WIN_SERVICE_TEST_FAULT_CLIENT_RESPONSE_BUF_REALLOC, 0);
+        nipc_error_t err = nipc_client_call_apps_lookup(&client, pids, 4, &view);
+        clear_test_faults();
+        check("apps stitched-response buffer fault rejected",
+              err == NIPC_ERR_OVERFLOW);
+        check("apps stitched-response used split calls", state.calls >= 2);
+
+        nipc_client_close(&client);
+        stop_lookup_server_drain(&sctx, server_thread);
+    }
+
+    {
+        char service[64];
+        unique_service(service, sizeof(service),
+                       "svc_cgroups_lookup_stitched_resp_fault");
+
+        lookup_scale_state_t state = {0};
+        lookup_server_thread_ctx_t sctx;
+        nipc_server_config_t scfg = default_typed_server_config();
+        scfg.max_response_payload_bytes = 1200;
+        nipc_cgroups_lookup_service_handler_t handler = {
+            .handle = cgroups_lookup_response_split_handler,
+            .user = &state,
+        };
+        HANDLE server_thread = start_lookup_server_named(
+            &sctx, service, LOOKUP_SERVER_CGROUPS, &scfg, &handler, NULL);
+        if (!server_thread)
+            return;
+
+        nipc_client_ctx_t client;
+        nipc_client_config_t ccfg = default_client_config();
+        ccfg.max_response_payload_bytes = 1200;
+        nipc_client_init(&client, TEST_RUN_DIR, service, &ccfg);
+        check("cgroups stitched-response fault client ready",
+              refresh_until_ready(&client, 100, 10));
+
+        nipc_str_view_t paths[] = {
+            {.ptr = "/a", .len = 2},
+            {.ptr = "/b", .len = 2},
+            {.ptr = "/c", .len = 2},
+            {.ptr = "/d", .len = 2},
+        };
+        nipc_cgroups_lookup_resp_view_t view;
+        nipc_win_service_test_fault_set(
+            NIPC_WIN_SERVICE_TEST_FAULT_CLIENT_RESPONSE_BUF_REALLOC, 0);
+        nipc_error_t err = nipc_client_call_cgroups_lookup(
+            &client, paths, 4, &view);
+        clear_test_faults();
+        check("cgroups stitched-response buffer fault rejected",
+              err == NIPC_ERR_OVERFLOW);
+        check("cgroups stitched-response used split calls", state.calls >= 2);
+
+        nipc_client_close(&client);
+        stop_lookup_server_drain(&sctx, server_thread);
+    }
+}
+
+static void test_lookup_missing_handler_dispatch(void)
+{
+    printf("--- Typed lookup missing handler dispatch ---\n");
+
+    char service[64];
+    unique_service(service, sizeof(service), "svc_lookup_missing_apps_handler");
+    lookup_server_thread_ctx_t sctx;
+    nipc_server_config_t scfg = default_typed_server_config();
+    nipc_apps_lookup_service_handler_t apps_handler = {0};
+    HANDLE server_thread = start_lookup_server_named(
+        &sctx, service, LOOKUP_SERVER_APPS, &scfg, NULL, &apps_handler);
+    if (!server_thread)
+        return;
+
+    nipc_client_ctx_t client;
+    nipc_client_config_t ccfg = default_client_config();
+    nipc_client_init(&client, TEST_RUN_DIR, service, &ccfg);
+    check("apps missing-handler client ready",
+          refresh_until_ready(&client, 100, 10));
+    uint32_t pid = 1234;
+    nipc_apps_lookup_resp_view_t apps_view;
+    check("apps missing handler fails call",
+          nipc_client_call_apps_lookup(&client, &pid, 1, &apps_view) !=
+              NIPC_OK);
+    nipc_client_close(&client);
+    stop_lookup_server_drain(&sctx, server_thread);
+
+    unique_service(service, sizeof(service), "svc_lookup_missing_cgroups_handler");
+    nipc_cgroups_lookup_service_handler_t cgroups_handler = {0};
+    server_thread = start_lookup_server_named(
+        &sctx, service, LOOKUP_SERVER_CGROUPS, &scfg, &cgroups_handler, NULL);
+    if (!server_thread)
+        return;
+
+    nipc_client_init(&client, TEST_RUN_DIR, service, &ccfg);
+    check("cgroups missing-handler client ready",
+          refresh_until_ready(&client, 100, 10));
+    nipc_str_view_t path = {.ptr = "/ok", .len = 3};
+    nipc_cgroups_lookup_resp_view_t cgroups_view;
+    check("cgroups missing handler fails call",
+          nipc_client_call_cgroups_lookup(&client, &path, 1, &cgroups_view) !=
+              NIPC_OK);
+    nipc_client_close(&client);
+    stop_lookup_server_drain(&sctx, server_thread);
+}
+
 int main(void)
 {
     printf("=== Windows Service Extra Tests ===\n\n");
     CreateDirectoryA(TEST_RUN_DIR, NULL);
     g_test_filter = getenv("NIPC_TEST_FILTER");
 
+    RUN_TEST(test_common_helper_edges);
     RUN_TEST(test_client_init_defaults_and_truncation);
     RUN_TEST(test_client_init_null_config_defaults);
     RUN_TEST(test_server_init_argument_validation);
     RUN_TEST(test_server_init_worker_count_clamp);
     RUN_TEST(test_server_init_null_config_defaults);
     RUN_TEST(test_client_response_buffer_minimum);
+    RUN_TEST(test_lookup_request_capacity_reconnect_edges);
     RUN_TEST(test_lookup_typed_calls);
     RUN_TEST(test_lookup_zero_item_calls);
     RUN_TEST(test_lookup_payload_exceeded_retry);
@@ -4001,6 +4802,10 @@ int main(void)
     RUN_TEST(test_lookup_timeout_during_followup_subcall);
     RUN_TEST(test_lookup_abort_during_followup_subcall);
     RUN_TEST(test_lookup_init_and_client_guards);
+    RUN_TEST(test_lookup_client_preflight_edges);
+    RUN_TEST(test_lookup_request_capacity_failure_edges);
+    RUN_TEST(test_lookup_stitched_response_buffer_fault_edges);
+    RUN_TEST(test_lookup_missing_handler_dispatch);
     RUN_TEST(test_client_fault_injection_disconnects_and_recovers);
     RUN_TEST(test_server_init_fault_injection);
     RUN_TEST(test_refresh_from_broken_state);

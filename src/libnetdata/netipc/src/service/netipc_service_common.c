@@ -459,6 +459,8 @@ nipc_error_t nipc_service_common_client_ensure_request_capacity(
   uint32_t prev_req = ctx->session.max_request_payload_bytes;
   ops->disconnect(ctx);
   ctx->state = NIPC_CLIENT_BROKEN;
+  if (ops->reconnect_drain_ms > 0 && ops->sleep_ms)
+    ops->sleep_ms(ops->reconnect_drain_ms);
   if (!ops->reconnect_for_call(ctx)) {
     ctx->error_count++;
     return NIPC_ERR_OVERFLOW;

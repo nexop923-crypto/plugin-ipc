@@ -34,7 +34,7 @@ run() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-BUILD_DIR="${REPO_ROOT}/build"
+BUILD_DIR="${NIPC_INTEROP_CODEC_BUILD_DIR:-${REPO_ROOT}/build}"
 RUST_CRATE_DIR="${REPO_ROOT}/src/crates/netipc"
 GO_FIXTURE_DIR="${REPO_ROOT}/tests/fixtures/go"
 

@@ -1729,3 +1729,128 @@ func TestLookupBuilderOverflowStatusSuffix(t *testing.T) {
 		}
 	})
 }
+
+func TestLookupBuilderExplicitPayloadExceededSuffixLens(t *testing.T) {
+	t.Run("apps", func(t *testing.T) {
+		buf := make([]byte, 246)
+		builder := NewAppsLookupBuilder(buf, 3, 11)
+		builder.SetPayloadExceededItemLens([]int{
+			appsLookupUnknownItemSize,
+			appsLookupUnknownItemSize,
+			appsLookupUnknownItemSize,
+		})
+		for _, pid := range []uint32{10, 11, 12} {
+			if err := builder.Add(PidLookupKnown, AppsCgroupKnown, OrchestratorDocker, pid, 0, 1000, 1, []byte("p"), []byte("/x"), nil, nil); err != nil {
+				t.Fatalf("add apps pid %d: %v", pid, err)
+			}
+		}
+		view, err := DecodeAppsLookupResponse(buf[:builder.Finish()])
+		if err != nil {
+			t.Fatalf("decode apps explicit suffix response: %v", err)
+		}
+		for i, want := range []struct {
+			pid    uint32
+			status uint16
+		}{
+			{10, PidLookupKnown},
+			{11, PidLookupPayloadExceeded},
+			{12, PidLookupPayloadExceeded},
+		} {
+			item, err := view.Item(uint32(i))
+			if err != nil {
+				t.Fatalf("apps item %d: %v", i, err)
+			}
+			if item.Pid != want.pid || item.Status != want.status {
+				t.Fatalf("apps item %d = pid/status %d/%d, want %d/%d", i, item.Pid, item.Status, want.pid, want.status)
+			}
+		}
+
+		bad := NewAppsLookupBuilder(make([]byte, AppsLookupRespHdr+LookupDirEntrySize), 1, 0)
+		bad.SetPayloadExceededItemLens([]int{-1})
+		if bad.Error() != ErrOverflow {
+			t.Fatalf("invalid apps suffix lens error = %v, want ErrOverflow", bad.Error())
+		}
+	})
+
+	t.Run("cgroups", func(t *testing.T) {
+		paths := [][]byte{[]byte("/a"), []byte("/b"), []byte("/c")}
+		itemLens := make([]int, len(paths))
+		for i, path := range paths {
+			itemLens[i] = cgroupsLookupUnknownFixedBytes + len(path) + 1
+		}
+
+		buf := make([]byte, 148)
+		builder := NewCgroupsLookupBuilder(buf, 3, 12)
+		builder.SetPayloadExceededItemLens(itemLens)
+		for i, path := range paths {
+			if err := builder.Add(CgroupLookupKnown, OrchestratorDocker, path, []byte("n"), nil); err != nil {
+				t.Fatalf("add cgroups path %d: %v", i, err)
+			}
+		}
+		view, err := DecodeCgroupsLookupResponse(buf[:builder.Finish()])
+		if err != nil {
+			t.Fatalf("decode cgroups explicit suffix response: %v", err)
+		}
+		for i, want := range []struct {
+			path   string
+			status uint16
+		}{
+			{"/a", CgroupLookupKnown},
+			{"/b", CgroupLookupPayloadExceeded},
+			{"/c", CgroupLookupPayloadExceeded},
+		} {
+			item, err := view.Item(uint32(i))
+			if err != nil {
+				t.Fatalf("cgroups item %d: %v", i, err)
+			}
+			if item.Path.String() != want.path || item.Status != want.status {
+				t.Fatalf("cgroups item %d = path/status %q/%d, want %q/%d", i, item.Path.String(), item.Status, want.path, want.status)
+			}
+		}
+
+		bad := NewCgroupsLookupBuilder(make([]byte, CgroupsLookupRespHdr+LookupDirEntrySize), 1, 0)
+		bad.SetPayloadExceededItemLens([]int{-1})
+		if bad.Error() != ErrOverflow {
+			t.Fatalf("invalid cgroups suffix lens error = %v, want ErrOverflow", bad.Error())
+		}
+	})
+}
+
+func TestCgroupsLookupBuilderAddRequestItemGuards(t *testing.T) {
+	buf := make([]byte, 256)
+	builder := NewCgroupsLookupBuilder(buf, 1, 0)
+	if err := builder.AddRequestItem(nil, 0, CgroupLookupKnown, OrchestratorDocker, []byte("n"), nil); err != ErrBadLayout {
+		t.Fatalf("nil request AddRequestItem error = %v, want ErrBadLayout", err)
+	}
+
+	var reqBuf [128]byte
+	reqLen, err := EncodeCgroupsLookupRequest([][]byte{[]byte("/x")}, reqBuf[:])
+	if err != nil {
+		t.Fatalf("encode cgroups request: %v", err)
+	}
+	req, err := DecodeCgroupsLookupRequest(reqBuf[:reqLen])
+	if err != nil {
+		t.Fatalf("decode cgroups request: %v", err)
+	}
+
+	builder = NewCgroupsLookupBuilder(buf, 1, 0)
+	if err := builder.AddRequestItem(req, 0, CgroupLookupKnown, OrchestratorDocker, []byte("bad\x00name"), nil); err != ErrBadLayout {
+		t.Fatalf("bad name AddRequestItem error = %v, want ErrBadLayout", err)
+	}
+
+	builder = NewCgroupsLookupBuilder(buf, 1, 33)
+	if err := builder.AddRequestItem(req, 0, CgroupLookupKnown, OrchestratorDocker, []byte("name"), nil); err != nil {
+		t.Fatalf("valid AddRequestItem: %v", err)
+	}
+	view, err := DecodeCgroupsLookupResponse(buf[:builder.Finish()])
+	if err != nil {
+		t.Fatalf("decode request-backed cgroups response: %v", err)
+	}
+	item, err := view.Item(0)
+	if err != nil {
+		t.Fatalf("request-backed cgroups item: %v", err)
+	}
+	if item.Path.String() != "/x" || item.Name.String() != "name" || item.Status != CgroupLookupKnown {
+		t.Fatalf("request-backed cgroups item = %+v", item)
+	}
+}
