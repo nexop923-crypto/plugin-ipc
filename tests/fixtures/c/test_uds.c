@@ -1143,6 +1143,31 @@ static void test_stale_recovery_reclaims_regular_file(void)
     cleanup_socket(svc);
 }
 
+static void test_listen_socket_owner_only(void)
+{
+    printf("Test: Listen creates owner-only socket\n");
+    const char *svc = "test_socket_owner_only";
+    cleanup_socket(svc);
+
+    nipc_uds_server_config_t scfg = default_server_config();
+    nipc_uds_listener_t listener;
+    nipc_uds_error_t err = nipc_uds_listen(TEST_RUN_DIR, svc, &scfg, &listener);
+    check("listen succeeds", err == NIPC_UDS_OK);
+
+    if (err == NIPC_UDS_OK) {
+        char path[256];
+        snprintf(path, sizeof(path), "%s/%s.sock", TEST_RUN_DIR, svc);
+
+        struct stat st;
+        check("socket path can be statted", stat(path, &st) == 0);
+        check("socket mode is owner-only", (st.st_mode & 0777) == 0600);
+
+        nipc_uds_close_listener(&listener);
+    }
+
+    cleanup_socket(svc);
+}
+
 /* ------------------------------------------------------------------ */
 /*  Test 9: Disconnect with in-flight request                          */
 /* ------------------------------------------------------------------ */
@@ -3239,6 +3264,7 @@ int main(void)
     test_request_payload_over_cap(); printf("\n");
     test_stale_recovery();         printf("\n");
     test_stale_recovery_reclaims_regular_file(); printf("\n");
+    test_listen_socket_owner_only(); printf("\n");
     test_disconnect_inflight();    printf("\n");
     test_batch();                  printf("\n");
     test_invalid_service_name();   printf("\n");

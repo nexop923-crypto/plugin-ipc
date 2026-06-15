@@ -183,6 +183,12 @@ nipc_uds_error_t nipc_uds_listen(const char *run_dir,
         return NIPC_UDS_ERR_SOCKET;
     }
 
+    if (chmod(path, S_IRUSR | S_IWUSR) < 0) {
+        close(fd);
+        unlink(path);
+        return NIPC_UDS_ERR_SOCKET;
+    }
+
     int backlog = config->backlog > 0 ? config->backlog : UDS_DEFAULT_BACKLOG;
     if (listen(fd, backlog) < 0) {
         close(fd);
